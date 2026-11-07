@@ -1,4 +1,8 @@
-//! Build independent repositories through private staging and verified object copies.
+//! Build independent repositories by merging, sampling, or partitioning records.
+//!
+//! Each output keeps the stored archive ancestors needed by its selected
+//! descendants. Additional ancestors are structural records, so they preserve
+//! provenance while staying out of ordinary selection counts.
 use super::{
     metadata::{self, Occurrence},
     security,
@@ -16,6 +20,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+/// Source repositories, destination, and publication mode for a derived dataset.
 pub struct Options {
     pub sources: Vec<PathBuf>,
     pub output: PathBuf,
@@ -35,6 +40,10 @@ pub enum SplitBy {
     Format,
 }
 #[derive(Debug, Serialize, Deserialize)]
+/// Deterministic sampling settings applied after filtering.
+///
+/// Set exactly one of `count` and `percentage`. Percentage targets round down.
+/// The seed orders candidates within each stratum.
 pub struct SampleOptions {
     pub count: Option<usize>,
     pub percentage: Option<f64>,
@@ -60,6 +69,10 @@ pub struct Allocation {
     pub selected: usize,
 }
 #[derive(Debug, Serialize, Deserialize)]
+/// Reproducibility record written to `reports/dataset.json`.
+///
+/// Source fingerprints identify the catalog snapshots used for selection.
+/// Selected records and added archive ancestors are reported separately.
 pub struct DatasetReport {
     pub schema_version: u32,
     pub algorithm_version: String,
@@ -250,6 +263,11 @@ fn object_summary(records: &[Occurrence]) -> Result<(usize, u64)> {
     Ok((objects.len(), bytes))
 }
 
+/// Plan or publish a derived dataset with verified copies of its objects.
+///
+/// Dry runs inspect source metadata and object attributes. Actual copies
+/// require standard repositories. Resumable runs retain private staging
+/// and verify completed work against the same source snapshots and settings.
 pub fn run(options: &Options, filter: &Filters, cancelled: &AtomicBool) -> Result<Report> {
     interrupted(cancelled)?;
     ensure!(

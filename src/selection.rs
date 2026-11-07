@@ -1,4 +1,7 @@
-//! Shared metadata selection; organization rules remain responsible for destinations.
+//! Shared selectors for stored records and freshly classified inputs.
+//!
+//! Stored selections use the indexed columns of the SQLite catalog. Ingestion
+//! applies the same criteria to records in memory before publication.
 use crate::{
     detection::{classifier::Format, mismatch::Status},
     repository::metadata::Occurrence,
@@ -6,6 +9,25 @@ use crate::{
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
+/// Criteria that a single occurrence must satisfy.
+///
+/// Values in each inclusion list are alternatives. All populated inclusion
+/// criteria must match, and either exclusion list can reject a match. Size
+/// bounds are inclusive. Extensions come from the original filename and
+/// detected formats come from content classification.
+///
+/// For example, a PDF named `sample.bin` matches a PDF format filter.
+///
+/// ```
+/// use bfsort::{detection::classifier::Format, selection::Filters};
+///
+/// let pdfs = Filters {
+///     include_formats: vec![Format::Pdf],
+///     ..Filters::default()
+/// };
+/// pdfs.validate()?;
+/// # Ok::<(), anyhow::Error>(())
+/// ```
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Filters {
@@ -47,6 +69,10 @@ fn parse_format(value: &str) -> std::result::Result<Format, String> {
 }
 
 impl Selection {
+    /// Apply supplied CLI options over configured filters and validate the result.
+    ///
+    /// Each nonempty CLI list replaces the corresponding configured list.
+    /// Omitted options retain their configured values.
     pub fn resolve(&self, mut base: Filters) -> Result<Filters> {
         for (cli, configured) in [
             (&self.include_ext, &mut base.include_extensions),
@@ -119,6 +145,10 @@ impl Filters {
             && self.max_size.is_none()
     }
 
+    /// Test the record's saved classification, original extension, hash, and size.
+    ///
+    /// This predicate evaluates metadata fields only. Repository selection also
+    /// applies catalog visibility rules for structural ancestors and removals.
     pub fn matches(&self, row: &Occurrence) -> bool {
         self.matches_fields(
             &row.original_extension,

@@ -15,6 +15,10 @@ use anyhow::{Result, ensure};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Serialize)]
+/// Logical counts for the selected records and physical totals for the repository.
+///
+/// Multiple source occurrences can share one stored object. Physical totals
+/// include objects outside the selection, including unreferenced objects.
 pub struct Summary {
     pub nested: crate::ingest::nested::NestedSummary,
     pub occurrences: usize,
@@ -34,7 +38,7 @@ pub struct Summary {
     pub extension_format: Vec<CrossCount>,
     pub mismatch_pairs: Vec<CrossCount>,
 }
-/// Summarize manifest occurrences, canonical objects, and storage usage.
+/// Summarize selected occurrences using the catalog's repository-wide references.
 pub fn summary(repo: &Repository, records: &[Occurrence]) -> Result<Summary> {
     let referenced = crate::repository::catalog::read(repo.root())?.referenced_hashes()?;
     summary_with_references(repo, records, &referenced)

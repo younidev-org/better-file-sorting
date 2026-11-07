@@ -7,7 +7,7 @@
 <div align="center">
 
   <p>
-    <img src="https://img.shields.io/badge/Platform-Linux-1793D1?style=for-the-badge&amp;logo=linux&amp;logoColor=white" alt="Supported platform: Linux">
+    <img src="https://img.shields.io/badge/Plagtform-Linux-1793D1?style=for-the-badge&amp;logo=linux&amp;logoColor=white" alt="Supported platform: Linux">
     <a href="https://github.com/younidev-org/better-file-sorting/releases"><img src="https://img.shields.io/badge/Release-View_Releases-2EA44F?style=for-the-badge&amp;logo=github&amp;logoColor=white" alt="View releases"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL_3.0_or_later-2EA44F?style=for-the-badge" alt="License: GNU GPL v3.0 or later"></a>
     <a href="docs/README.md"><img src="https://img.shields.io/badge/Documentation%20Hub-0969DA?style=for-the-badge&amp;logo=mdbook&amp;logoColor=white" alt="Open the documentation hub"></a>

@@ -334,7 +334,11 @@ fn export_report(
     }))
 }
 
-/// Export without discovery, extraction, hashing, detection, or view mutation.
+/// Plan an export from saved metadata and write ZIP output when requested.
+///
+/// A dry run returns the same planned entries without opening payloads.
+/// Publication requires standard-mode objects. Resumable export verifies
+/// completed ZIPs before reuse and publishes missing outputs independently.
 pub fn export_repository(
     repo: &crate::repository::storage::Repository,
     rules: &crate::organization::rules::Rules,

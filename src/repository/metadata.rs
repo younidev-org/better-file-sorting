@@ -3,8 +3,8 @@
 
 //! Stores occurrence metadata in SQLite and imports validated legacy JSONL snapshots.
 //! Content hashes identify objects; occurrence identities retain distinct source events.
-//! Legacy imports validate bounded records and tolerate interrupted final journal lines.
-//! SQLite owns current state; optional remote provenance preserves old-data compatibility.
+//! Legacy journal loading tolerates an interrupted final line. Explicit imports
+//! validate the entire input before publishing a batch to the catalog.
 
 use crate::{app::config::SecurityMode, repository::security, repository::storage::valid_hash};
 use anyhow::{Result, ensure};
@@ -16,6 +16,10 @@ use std::{
     io::{BufRead, BufReader, Write},
     path::Path,
 };
+/// One source event for a stored object.
+///
+/// Multiple occurrences can reference the same content hash. Their identities
+/// preserve each source path, entry name, and archive position.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Occurrence {
@@ -34,6 +38,7 @@ pub struct Occurrence {
     /// Old manifests conservatively retain archive-sample safeguards.
     #[serde(default)]
     pub input_mode: crate::app::config::InputMode,
+    /// Stable identity of this source event, independent of the object path.
     pub occurrence_id: String,
     /// Content digest used to verify integrity and identify stored objects.
     pub sha256: String,
@@ -47,14 +52,19 @@ pub struct Occurrence {
     pub source_path: String,
     pub entry_index: usize,
     pub encrypted: bool,
+    /// Date of ingestion into bfsort.
     pub ingest_date: String,
     pub run_id: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+/// Location of a nested member relative to its root input.
 pub struct NestedProvenance {
     pub schema_version: u32,
     pub parent_sha256: String,
+    /// Stored parent occurrence, if the containing archive is part of the repository.
+    ///
+    /// Direct members of an external root archive can have only its content hash.
     pub parent_occurrence_id: Option<String>,
     pub root_source: String,
     pub root_input_hash: String,
@@ -183,7 +193,7 @@ pub fn import_jsonl(repo: &super::storage::Repository, input: &Path) -> Result<u
     Ok(rows.len())
 }
 
-/// Load, validate, deduplicate, and deterministically order manifest records.
+/// Load visible, active occurrences in catalog order.
 pub fn load(root: &Path) -> Result<Vec<Occurrence>> {
     select(root, &crate::selection::Filters::default())
 }
@@ -194,7 +204,7 @@ pub fn select(root: &Path, filters: &crate::selection::Filters) -> Result<Vec<Oc
     super::catalog::read(root)?.select(filters, false)
 }
 
-/// Validated effective metadata including logically removed occurrences, for retained views.
+/// Load effective metadata including removed and structural occurrences.
 pub fn load_all(root: &Path) -> Result<Vec<Occurrence>> {
     super::catalog::read(root)?.select(&crate::selection::Filters::default(), true)
 }

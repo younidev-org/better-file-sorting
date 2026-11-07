@@ -182,7 +182,7 @@ pub enum Command {
     Analyze {
         #[command(flatten)]
         selection: crate::selection::Selection,
-        /// Configuration enabling [archive] nested extraction and tree budgets
+        /// Configuration for nested extraction and per-tree budgets
         #[arg(short = 'c', long)]
         config: Option<PathBuf>,
         /// Continue with verified archive extraction receipts

@@ -1,4 +1,10 @@
-//! Private, versioned SQLite authority for repository metadata.
+//! SQLite storage for occurrence metadata and repository relationships.
+//!
+//! Object bytes live in the filesystem. The catalog stores their identities,
+//! occurrence records, indexed selection fields, ancestry, retained views, and
+//! operation history. A repository mutation normally goes through
+//! [`Repository::with_catalog`](super::storage::Repository::with_catalog) so it
+//! shares the repository lock and serialized writer connection.
 use super::{
     metadata::{self, Occurrence},
     security,
@@ -102,6 +108,10 @@ fn memory(root: &Path) -> Result<Catalog> {
     catalog.import(root)?;
     Ok(catalog)
 }
+/// Open the existing catalog read-only, or load legacy records into memory.
+///
+/// A legacy read leaves the repository unchanged. If a database exists,
+/// failure to open or validate it is returned to the caller.
 pub fn read(root: &Path) -> Result<Catalog> {
     if !exists(root)? {
         return memory(root);
@@ -114,6 +124,9 @@ pub fn read(root: &Path) -> Result<Catalog> {
     validate(&connection)?;
     Ok(Catalog { connection })
 }
+/// Open the writable catalog, migrating legacy metadata or schema as needed.
+///
+/// The caller must hold the repository lock while writing.
 pub fn write(root: &Path) -> Result<Catalog> {
     if exists(root)? {
         let connection = Connection::open_with_flags(
@@ -393,6 +406,11 @@ impl Catalog {
     pub fn insert(&mut self, row: &Occurrence) -> Result<()> {
         self.insert_many(std::slice::from_ref(row))
     }
+    /// Insert a batch in a single transaction, including its ancestry links.
+    ///
+    /// Callers must publish and synchronize the referenced object files first.
+    /// Existing identities retain their provenance. Re-inserting a structural
+    /// record as visible promotes it into ordinary selections.
     pub fn insert_many(&mut self, rows: &[Occurrence]) -> Result<()> {
         let transaction = self.connection.transaction()?;
         for row in rows {
@@ -437,6 +455,10 @@ impl Catalog {
         transaction.commit()?;
         Ok(())
     }
+    /// Decode and validate matching records in source path and entry order.
+    ///
+    /// Set `include_removed` to include both tombstoned and structural records.
+    /// Ordinary queries keep it false to return visible, active occurrences.
     pub fn select(&self, filters: &Filters, include_removed: bool) -> Result<Vec<Occurrence>> {
         let structural_supported =
             self.connection
@@ -484,6 +506,7 @@ impl Catalog {
         }
         Ok(result)
     }
+    /// Count visible occurrences and distinct object hashes directly in SQL.
     pub fn counts(&self, filters: &Filters) -> Result<Counts> {
         let structural_supported =
             self.connection
@@ -606,6 +629,9 @@ impl Catalog {
             })?
             .collect::<rusqlite::Result<_>>()?)
     }
+    /// Collect object references from active records, ancestry, and retained views.
+    ///
+    /// Cleanup also checks recovery state before deciding which objects to prune.
     pub fn referenced_hashes(&self) -> Result<BTreeSet<String>> {
         let mut statement=self.connection.prepare("SELECT hash FROM occurrences o WHERE NOT EXISTS(SELECT 1 FROM tombstones t WHERE t.id=o.id) UNION SELECT hash FROM view_entries UNION SELECT parent_hash FROM ancestry a JOIN occurrences o ON a.occurrence_id=o.id WHERE NOT EXISTS(SELECT 1 FROM tombstones t WHERE t.id=o.id)")?;
         let rows = statement.query_map([], |r| r.get::<_, String>(0))?;

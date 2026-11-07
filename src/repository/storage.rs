@@ -14,6 +14,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// An open repository with a fixed security mode and an exclusive lock.
+///
+/// The lock lives as long as this handle. The writable catalog is opened
+/// lazily and shared by workers through [Self::with_catalog].
 pub struct Repository {
     root: PathBuf,
     mode: SecurityMode,
@@ -148,7 +152,12 @@ impl Repository {
         ensure!(valid_hash(hash), "invalid canonical hash");
         Ok(self.root.join("objects").join(&hash[..2]).join(hash))
     }
-    /// Seal and atomically publish one staged canonical object without overwriting.
+    /// Publish a staged object under the SHA-256 identity computed by the caller.
+    ///
+    /// Publication synchronizes the file with its final permissions, installs
+    /// it without replacing an existing object, and synchronizes the parent
+    /// directory. An existing object is checked for permissions and size.
+    /// Callers can record the occurrence once this returns successfully.
     pub fn commit(&self, file: tempfile::NamedTempFile, hash: &str, size: u64) -> Result<()> {
         let target = self.object(hash)?;
         security::private_dir(target.parent().expect("object parent"))?;

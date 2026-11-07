@@ -1,4 +1,9 @@
-//! Iterative ZIP traversal with durable direct-child receipts and occurrence provenance.
+//! Traverse ZIPs inside ZIPs while preserving each member's provenance.
+//!
+//! A direct-child receipt describes the extraction of one archive under a
+//! particular policy. Reuse still charges the root tree's resource budget.
+//! Filtering retains required ZIP containers as structural occurrences so
+//! matching descendants keep their parent links.
 use crate::{
     app::config::{ArchiveConfig, Config, InputMode, SecurityMode},
     detection::classifier::{self, Detection, Format},

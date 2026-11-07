@@ -1,4 +1,8 @@
-//! Private operation history. Checkpoints remain authoritative for reusable work.
+//! Record operation lifecycle, input outcomes, and retry arguments.
+//!
+//! Repository operations use the SQLite catalog. Collection operations use
+//! local JSON history. The history guides retries, while each operation's
+//! checkpoints determine what work can be reused.
 use crate::{
     app::{cli::Cli, config::SecurityMode},
     collection::acquisition,
@@ -520,7 +524,11 @@ pub fn retry_arguments(root: &Path, id: &str) -> Result<Vec<String>> {
     Ok(args)
 }
 
-/// Select recorded ingest inputs while reusing the operation's verified resume settings.
+/// Rebuild a recorded ingest command for selected inputs.
+///
+/// Failed-only selection includes failed, interrupted, and pending inputs.
+/// Explicit paths must belong to the recorded operation. The caller runs
+/// the returned arguments from the recorded working directory.
 pub fn retry_selected_arguments(
     root: &Path,
     id: &str,

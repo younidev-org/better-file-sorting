@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Younidev. See LICENSE for license terms.
 
 //! Defines the acquisition configuration, policy selection, and durable transfer inventory.
-//! Discovery and download share these records; ingestion consumes completion receipts only
-//! after the user explicitly unlocks payloads and their size and SHA-256 are verified.
+//! Discovery records candidates in the inventory. Downloads publish completion
+//! receipts that ingestion uses to identify and verify accessible inputs.
 //! Metadata is bounded and published atomically, independently of sealed payload storage.
 
 /// Maximum serialized inventory or receipt size accepted from disk.
@@ -429,6 +429,11 @@ pub struct CompletedInput {
     pub path: PathBuf,
     pub receipt: DownloadReceipt,
 }
+/// Resolve completed receipts to accessible inputs for ingestion.
+///
+/// Receipt identities and paths must agree with the acquisition settings.
+/// Accessible payloads are checked against the recorded size and SHA-256.
+/// A sealed payload requires the user to grant access before ingestion.
 pub fn completed_inputs(config: &DownloadConfig) -> Result<Vec<CompletedInput>> {
     config.validate()?;
     use sha2::{Digest, Sha256};

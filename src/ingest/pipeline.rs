@@ -2,9 +2,12 @@
 // Copyright (c) 2026 Younidev. See LICENSE for license terms.
 
 //! Coordinates discovery, extraction, classification, storage, metadata and organization.
-//! Ingest uses bounded workers and durable journals; preview runs the same planning
-//! logic in disposable storage. ZIP publication requires successful processing, and
-//! remote inputs retain stable source identities across different staging locations.
+//! Workers process independent inputs in parallel. Object publication makes
+//! payloads durable before recording their occurrences in SQLite. A completed
+//! input checkpoint is written after its final metadata batch commits.
+//!
+//! Preview uses disposable storage to compute the actual layout. Remote inputs
+//! retain stable source identities across different staging locations.
 
 use crate::{
     app::config::{Config, InputMode, SecurityMode},
@@ -353,7 +356,10 @@ pub fn preview(config: &Config, cancelled: &AtomicBool) -> Result<Preview> {
         },
     })
 }
-/// Ingest discovered archives with bounded parallel workers and durable metadata.
+/// Ingest discovered files or archive members with bounded parallel workers.
+///
+/// Repository ingestion retains published work for recovery. Direct ZIP
+/// output uses temporary storage and publishes only after successful ingestion.
 pub fn ingest(config: &Config, cancelled: &AtomicBool) -> Result<RunReport> {
     config.validate()?;
     ensure!(
