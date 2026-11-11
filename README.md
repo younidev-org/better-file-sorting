@@ -113,7 +113,7 @@ Actual directories depend on selected rules and nonempty categories. Presets
 retain every source occurrence; duplicate content can appear multiple times in
 exports. Each ZIP includes payloads and a compact JSON export report. Merge, split and reproducible sampling create independent
 repositories; see [repository tools](docs/repository-tools.md).
-For SQLite catalog upgrades and imports, see [SQLite metadata](docs/sqlite.md).
+For SQLite catalog layout and imports, see [SQLite metadata](docs/sqlite.md).
 
 ## Storage and security
 

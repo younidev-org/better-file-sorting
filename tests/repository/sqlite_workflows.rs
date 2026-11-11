@@ -257,7 +257,7 @@ fn corrupt_sqlite_import_does_not_publish_prefix() {
     let connection = rusqlite::Connection::open(&invalid).unwrap();
     connection
         .execute(
-            "UPDATE occurrences SET normalized_extension='wrong' WHERE entry_index=2",
+            "UPDATE occurrences SET evidence='not-json' WHERE entry_index=2",
             [],
         )
         .unwrap();
@@ -323,21 +323,33 @@ fn import_rejects_missing_objects_and_conflicting_ids() {
 }
 
 #[test]
-fn metadata_migrate_upgrades_older_sqlite_catalogs() {
+fn version_three_catalog_has_columns_and_refuses_older_versions() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("repo");
     fixture(&root, &[synthetic(0)]);
     let path = root.join("metadata.sqlite3");
     let connection = rusqlite::Connection::open(&path).unwrap();
-    connection.execute_batch("ALTER TABLE occurrences DROP COLUMN structural; DROP TABLE operation_inputs; PRAGMA user_version=1;").unwrap();
-    drop(connection);
-    let result = success(&["metadata", "migrate", text(&root), "--json"]);
-    assert_eq!(result["occurrences"], 1);
-    let connection = rusqlite::Connection::open(path).unwrap();
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
+    let has_record: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('occurrences') WHERE name='record')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!has_record);
+    connection.pragma_update(None, "user_version", 2).unwrap();
+    drop(connection);
+
+    let before = fs::read(&path).unwrap();
+    let result = cli(&["query", text(&root), "--count", "--json"]);
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("re-ingest"));
+    assert!(Repository::open(&root, SecurityMode::Standard).is_err());
+    assert_eq!(fs::read(&path).unwrap(), before);
 }
 
 #[test]

@@ -411,23 +411,12 @@ fn missing_and_cyclic_nested_parents_fail_closed() {
     drop(connection);
     // A fully consistent FK cycle must also be refused, rather than looping.
     let source2 = temp.path().join("cycle");
-    let (mut parent, middle, _) = nested_fixture(&source2);
-    parent.nested = middle.nested.clone();
-    parent.nested.as_mut().unwrap().parent_occurrence_id = Some(middle.occurrence_id.clone());
-    parent.nested.as_mut().unwrap().parent_sha256 = middle.sha256.clone();
+    let (parent, middle, _) = nested_fixture(&source2);
     let connection = rusqlite::Connection::open(source2.join("metadata.sqlite3")).unwrap();
     connection
         .execute(
-            "UPDATE occurrences SET record=?1 WHERE id=?2",
-            rusqlite::params![
-                serde_json::to_string(&parent).unwrap(),
-                parent.occurrence_id
-            ],
-        )
-        .unwrap();
-    connection
-        .execute(
-            "INSERT INTO ancestry(occurrence_id,parent_id,parent_hash) VALUES(?1,?2,?3)",
+            "INSERT INTO ancestry(occurrence_id,parent_id,parent_hash,nested_version,root_source,
+            root_input_hash,archive_depth,entry_chain) VALUES(?1,?2,?3,1,'cycle',?3,0,'[0]')",
             rusqlite::params![parent.occurrence_id, middle.occurrence_id, middle.sha256],
         )
         .unwrap();
@@ -440,27 +429,13 @@ fn missing_and_cyclic_nested_parents_fail_closed() {
 fn external_outer_root_needs_no_invented_occurrence() {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("source");
-    let (_, _, mut child) = nested_fixture(&source);
-    let nested = child.nested.as_mut().unwrap();
-    nested.parent_occurrence_id = None;
-    nested.parent_sha256 = metadata::digest(b"external input");
-    nested.root_input_hash = nested.parent_sha256.clone();
-    nested.archive_depth = 0;
-    nested.entry_chain = vec![1];
+    let (_, _, child) = nested_fixture(&source);
     let connection = rusqlite::Connection::open(source.join("metadata.sqlite3")).unwrap();
     connection
         .execute(
-            "UPDATE occurrences SET record=?1 WHERE id=?2",
-            rusqlite::params![serde_json::to_string(&child).unwrap(), child.occurrence_id],
-        )
-        .unwrap();
-    connection
-        .execute(
-            "UPDATE ancestry SET parent_id=NULL,parent_hash=?1 WHERE occurrence_id=?2",
-            rusqlite::params![
-                child.nested.as_ref().unwrap().parent_sha256,
-                child.occurrence_id
-            ],
+            "UPDATE ancestry SET parent_id=NULL,parent_hash=?1,root_input_hash=?1,
+            archive_depth=0,entry_chain='[1]' WHERE occurrence_id=?2",
+            rusqlite::params![metadata::digest(b"external input"), child.occurrence_id],
         )
         .unwrap();
     drop(connection);
@@ -546,12 +521,8 @@ fn duplicate_selected_identity_cannot_hide_conflicting_ancestor_provenance() {
     let connection = rusqlite::Connection::open(right.join("metadata.sqlite3")).unwrap();
     connection
         .execute(
-            "UPDATE occurrences SET source_path=?1,record=?2 WHERE id=?3",
-            rusqlite::params![
-                parent.source_path,
-                serde_json::to_string(&parent).unwrap(),
-                parent.occurrence_id
-            ],
+            "UPDATE occurrences SET source_path=?1 WHERE id=?2",
+            rusqlite::params![parent.source_path, parent.occurrence_id],
         )
         .unwrap();
     drop(connection);

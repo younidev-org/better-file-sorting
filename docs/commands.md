@@ -241,12 +241,11 @@ an occurrence does not automatically reclaim its payload.
 ## SQLite metadata
 
 ```sh
-bfsort metadata migrate ./repository
 bfsort metadata import ./repository ./source/metadata.sqlite3
 ```
 
-Repository commands require `metadata.sqlite3`. Use `metadata migrate` to upgrade
-an older SQLite schema. Import reads active occurrences from a SQLite catalog
+Repository commands require a schema v3 `metadata.sqlite3`. Re-ingest older repositories
+from the original inputs into a fresh directory. Import reads active occurrences from a v3 catalog
 and requires the referenced objects in the destination. See
 [SQLite metadata](sqlite.md) for backup, schema, privacy and recovery details.
 

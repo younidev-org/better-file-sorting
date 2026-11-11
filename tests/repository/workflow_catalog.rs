@@ -1,7 +1,6 @@
 //! SQLite persistence for input outcomes and retained view plans.
 //!
-//! Verify that older supported schemas stay unchanged during reads and upgrade
-//! atomically on the first write.
+//! Obsolete schemas are refused without changing the original catalog.
 
 use bfsort::{
     app::config::SecurityMode,
@@ -37,7 +36,7 @@ fn input_results_and_view_plans_are_durable_sqlite_state() {
 }
 
 #[test]
-fn older_catalog_read_is_unchanged_and_first_write_upgrades_atomically() {
+fn older_catalog_is_refused_without_changes() {
     let t = tempfile::tempdir().unwrap();
     let root = t.path().join("repo");
     drop(Repository::open(&root, SecurityMode::Standard).unwrap());
@@ -53,29 +52,10 @@ PRAGMA application_id=1111905073; PRAGMA user_version=1;").unwrap();
     drop(c);
     file.persist(root.join(catalog::FILE_NAME)).unwrap();
     let before = std::fs::read(root.join(catalog::FILE_NAME)).unwrap();
-    assert_eq!(
-        catalog::read(&root)
-            .unwrap()
-            .counts(&Default::default())
-            .unwrap()
-            .occurrences,
-        0
-    );
+    assert!(catalog::read(&root).is_err());
+    assert!(catalog::write(&root).is_err());
     assert_eq!(
         before,
         std::fs::read(root.join(catalog::FILE_NAME)).unwrap()
-    );
-    drop(catalog::write(&root).unwrap());
-    let c = rusqlite::Connection::open(root.join(catalog::FILE_NAME)).unwrap();
-    assert_eq!(
-        c.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        2
-    );
-    assert_eq!(
-        c.query_row("SELECT count(*) FROM operation_inputs", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        0
     );
 }

@@ -132,7 +132,7 @@ fn index_record_corruption_and_numeric_overflow_fail_closed() {
     drop(catalog);
     let connection = rusqlite::Connection::open(root.join(catalog::FILE_NAME)).unwrap();
     connection
-        .execute("UPDATE occurrences SET normalized_extension='exe'", [])
+        .execute("UPDATE occurrences SET evidence='not-json'", [])
         .unwrap();
     drop(connection);
     let catalog = catalog::read(&root).unwrap();
@@ -292,4 +292,24 @@ fn interrupted_and_cancelled_operations_round_trip() {
         catalog.put_operation(&record.id, &text).unwrap();
     }
     catalog.integrity().unwrap();
+}
+
+#[test]
+fn obsolete_detections_cannot_enter_a_v3_catalog() {
+    let (_temp, root) = fixture();
+    let mut catalog = catalog::write(&root).unwrap();
+    let mut obsolete = row(1);
+    obsolete.detection.detector_version = "bfs-2".into();
+    let error = catalog
+        .insert_many(&[row(2), obsolete.clone()])
+        .unwrap_err();
+    assert!(error.to_string().contains("re-ingest"));
+    assert_eq!(rows(&catalog).len(), 1);
+
+    obsolete.occurrence_id = row(0).occurrence_id;
+    assert!(catalog.update_classifications(&[obsolete]).is_err());
+    assert_eq!(
+        rows(&catalog)[0].detection.detector_version,
+        "not_evaluated"
+    );
 }

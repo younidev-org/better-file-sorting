@@ -518,26 +518,12 @@ fn malformed_provenance_depth_is_rejected_before_traversal() {
     );
     let connection =
         rusqlite::Connection::open(repo.join(bfsort::repository::catalog::FILE_NAME)).unwrap();
-    let records: Vec<(String, String)> = {
-        let mut statement = connection
-            .prepare("SELECT id,record FROM occurrences")
-            .unwrap();
-        statement
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap()
-    };
-    for (id, text) in records {
-        let mut row: serde_json::Value = serde_json::from_str(&text).unwrap();
-        row["nested"]["archive_depth"] = usize::MAX.into();
+    assert!(
         connection
-            .execute(
-                "UPDATE occurrences SET record=?1 WHERE id=?2",
-                rusqlite::params![row.to_string(), id],
-            )
-            .unwrap();
-    }
+            .execute("UPDATE ancestry SET archive_depth=?1", [i64::MAX])
+            .unwrap()
+            > 0
+    );
     drop(connection);
     assert!(bfsort::repository::metadata::load(&repo).is_err());
 }

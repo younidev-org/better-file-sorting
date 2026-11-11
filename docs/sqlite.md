@@ -4,21 +4,22 @@ Repositories keep payloads as individual SHA-256-addressed files under `objects/
 The private `metadata.sqlite3` catalog stores occurrences, classifications,
 relationships, retained view entries, removals and repository operation history.
 
-## Upgrading and importing
+## Fresh repositories and import
+
+Schema v3 requires a fresh repository. Re-ingest the original inputs into a
+different output directory. Older catalogs are refused, and new detections use
+`bfsort-3`.
+
+Each occurrence stores scalar metadata in SQLite columns. Object sizes live in
+`objects`, and nested relationships live in `ancestry`. Evidence, alternatives,
+and nested entry chains are JSON arrays. Query output still reconstructs the
+complete occurrence as JSON.
 
 ```sh
-bfsort metadata migrate REPOSITORY
 bfsort metadata import REPOSITORY SOURCE/metadata.sqlite3
 ```
 
-`metadata migrate` upgrades a supported older SQLite schema under the exclusive
-repository lock. If a repository has only legacy manifests, migrate it with an
-earlier release that supports those manifests before opening it here. Restore a
-missing or damaged catalog from a consistent backup. Existing files are retained.
-Verification reports unrecognized retained metadata. Prune stops when it
-cannot validate retained references.
-
-`metadata import` opens the source SQLite catalog read-only and validates its
+`metadata import` opens the source v3 catalog read-only and validates its
 records before committing active occurrences, including structural ancestors,
 in one destination transaction. Removed source occurrences are excluded. The
 destination must already contain the referenced objects with matching sizes and
@@ -29,7 +30,7 @@ The existing include/exclude extension and format flags, hash, mismatch and size
 
 ## Privacy, durability and recovery
 
-The repository and database are private. Metadata remains owner-readable/writable, including catalog journal or sidecar files. Sealed payload permission bits stay unchanged. A metadata query or catalog migration does not authorize opening sealed payload bytes.
+The repository and database are private. Metadata remains owner-readable/writable, including catalog journal or sidecar files. Sealed payload permission bits stay unchanged. A metadata query does not authorize opening sealed payload bytes.
 
 Catalog writes enable foreign keys and full synchronization, with rollback journals.
 Schema versions are explicit; numeric metadata must fit SQLite signed 64-bit

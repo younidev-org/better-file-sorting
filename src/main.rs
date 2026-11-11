@@ -18,30 +18,14 @@ fn run(cli: Cli) -> Result<u8> {
     match cli.command {
         Command::Metadata { command } => {
             use bfsort::app::cli::MetadataCommand;
-            let (kind, count) = match command {
-                MetadataCommand::Migrate { repository } => {
-                    exit_on_interrupt()?;
-                    let repo = bfsort::repository::storage::Repository::existing(&repository)?;
-                    let progress = Progress::delayed("Migrating catalog");
-                    let count = repo.with_catalog(|catalog| {
-                        Ok(catalog.counts(&Default::default())?.occurrences)
-                    })?;
-                    drop(progress);
-                    ("Migrated", count)
-                }
-                MetadataCommand::Import { repository, input } => {
-                    exit_on_interrupt()?;
-                    let repo = bfsort::repository::storage::Repository::existing(&repository)?;
-                    (
-                        "Imported",
-                        bfsort::repository::metadata::import_catalog(&repo, &input)? as u64,
-                    )
-                }
-            };
+            let MetadataCommand::Import { repository, input } = command;
+            exit_on_interrupt()?;
+            let repo = bfsort::repository::storage::Repository::existing(&repository)?;
+            let count = bfsort::repository::metadata::import_catalog(&repo, &input)?;
             output(
                 ui,
-                &serde_json::json!({"operation":kind,"occurrences":count}),
-                &format!("{kind}: {count} occurrences"),
+                &serde_json::json!({"operation":"Imported","occurrences":count}),
+                &format!("Imported: {count} occurrences"),
             )?;
             Ok(0)
         }

@@ -23,7 +23,7 @@ pub struct Cli {
 }
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Upgrade or import SQLite metadata without copying payloads
+    /// Import SQLite metadata without copying payloads
     Metadata {
         #[command(subcommand)]
         command: MetadataCommand,
@@ -465,8 +465,6 @@ pub enum SplitBy {
 
 #[derive(Debug, Subcommand)]
 pub enum MetadataCommand {
-    /// Upgrade the repository's SQLite catalog schema
-    Migrate { repository: PathBuf },
     /// Import active occurrences from a SQLite catalog; referenced objects must already exist
     Import { repository: PathBuf, input: PathBuf },
 }

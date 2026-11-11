@@ -130,5 +130,5 @@ Dry-run writes neither tombstones nor deletion journals. No command automaticall
 unseals a payload or deletes sources. This is conservative storage reclamation,
 not secure erasure of file contents.
 
-See [SQLite metadata](sqlite.md) for catalog authority, schema upgrades and
+See [SQLite metadata](sqlite.md) for catalog layout and
 SQLite import. Existing include/exclude flags keep the same meaning.

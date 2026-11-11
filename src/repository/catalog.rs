@@ -15,7 +15,7 @@ use rusqlite::{Connection, OpenFlags, params, types::Value};
 use std::{collections::BTreeSet, fs, path::Path};
 pub const FILE_NAME: &str = "metadata.sqlite3";
 const APPLICATION_ID: i64 = 0x42465331;
-const VERSION: i64 = 2;
+const VERSION: i64 = 3;
 pub struct Catalog {
     connection: Connection,
 }
@@ -73,16 +73,55 @@ fn validate(connection: &Connection) -> Result<()> {
     let version: i64 = connection.pragma_query_value(None, "user_version", |r| r.get(0))?;
     let app: i64 = connection.pragma_query_value(None, "application_id", |r| r.get(0))?;
     ensure!(
-        (version == 1 || version == VERSION) && app == APPLICATION_ID,
-        "unsupported SQLite catalog schema or application identity"
+        version == VERSION && app == APPLICATION_ID,
+        "unsupported SQLite catalog schema or application identity; re-ingest the original inputs into a fresh directory"
     );
     Ok(())
 }
 fn schema(connection: &Connection) -> Result<()> {
     connection.execute_batch("BEGIN;
 CREATE TABLE objects(hash TEXT PRIMARY KEY,size INTEGER NOT NULL CHECK(size>=0));
-CREATE TABLE occurrences(id TEXT PRIMARY KEY,hash TEXT NOT NULL REFERENCES objects(hash),normalized_extension TEXT NOT NULL,detected_format TEXT NOT NULL,mismatch TEXT NOT NULL,source_path TEXT NOT NULL,entry_index INTEGER NOT NULL CHECK(entry_index>=0),record TEXT NOT NULL,structural INTEGER NOT NULL DEFAULT 0 CHECK(structural IN (0,1)));
-CREATE TABLE ancestry(occurrence_id TEXT PRIMARY KEY REFERENCES occurrences(id) DEFERRABLE INITIALLY DEFERRED,parent_id TEXT REFERENCES occurrences(id) DEFERRABLE INITIALLY DEFERRED,parent_hash TEXT NOT NULL);
+CREATE TABLE occurrences(
+    id TEXT PRIMARY KEY NOT NULL,
+    hash TEXT NOT NULL REFERENCES objects(hash),
+    structural INTEGER NOT NULL CHECK(structural IN (0,1)),
+    input_mode TEXT NOT NULL,
+    file_type TEXT NOT NULL,
+    original_name TEXT NOT NULL,
+    original_entry_name TEXT NOT NULL,
+    original_stem TEXT NOT NULL,
+    original_extension TEXT NOT NULL,
+    normalized_extension TEXT GENERATED ALWAYS AS (lower(ltrim(original_extension,'.'))) VIRTUAL,
+    source_archive TEXT NOT NULL,
+    source_path TEXT NOT NULL,
+    entry_index INTEGER NOT NULL CHECK(entry_index>=0),
+    encrypted INTEGER NOT NULL CHECK(encrypted IN (0,1)),
+    ingest_date TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    detected_format TEXT NOT NULL,
+    detected_family TEXT NOT NULL,
+    mime_type TEXT,
+    confidence TEXT NOT NULL,
+    detector_version TEXT NOT NULL CHECK(detector_version<>'bfs-2'),
+    mismatch TEXT NOT NULL,
+    mismatch_reason TEXT NOT NULL,
+    evidence TEXT NOT NULL,
+    alternatives TEXT NOT NULL,
+    source_id TEXT,
+    source_url TEXT,
+    source_name TEXT,
+    CHECK ((source_id IS NULL) = (source_url IS NULL) AND (source_id IS NULL) = (source_name IS NULL))
+);
+CREATE TABLE ancestry(
+    occurrence_id TEXT PRIMARY KEY NOT NULL REFERENCES occurrences(id) DEFERRABLE INITIALLY DEFERRED,
+    parent_id TEXT REFERENCES occurrences(id) DEFERRABLE INITIALLY DEFERRED,
+    parent_hash TEXT NOT NULL,
+    nested_version INTEGER NOT NULL CHECK(nested_version=1),
+    root_source TEXT NOT NULL,
+    root_input_hash TEXT NOT NULL,
+    archive_depth INTEGER NOT NULL CHECK(archive_depth>=0),
+    entry_chain TEXT NOT NULL
+);
 CREATE TABLE tombstones(id TEXT PRIMARY KEY);
 CREATE TABLE view_entries(generation TEXT NOT NULL,path TEXT NOT NULL,occurrence_id TEXT NOT NULL REFERENCES occurrences(id),hash TEXT NOT NULL REFERENCES objects(hash),PRIMARY KEY(generation,path));
 CREATE TABLE operations(id TEXT PRIMARY KEY,record TEXT NOT NULL);
@@ -93,7 +132,7 @@ CREATE INDEX occurrences_order ON occurrences(source_path,entry_index,id);
 CREATE INDEX occurrences_format ON occurrences(detected_format);
 CREATE INDEX occurrences_mismatch ON occurrences(mismatch);
 CREATE INDEX objects_size ON objects(size);
-PRAGMA application_id=1111905073;PRAGMA user_version=2;COMMIT;")?;
+PRAGMA application_id=1111905073;PRAGMA user_version=3;COMMIT;")?;
     Ok(())
 }
 /// Open an existing SQLite catalog read-only.
@@ -105,7 +144,7 @@ pub fn read(root: &Path) -> Result<Catalog> {
 pub(super) fn require(root: &Path) -> Result<()> {
     ensure!(
         exists(root)?,
-        "metadata.sqlite3 is missing; restore the catalog or migrate the repository with a release that supports legacy metadata"
+        "metadata.sqlite3 is missing; restore the catalog or re-ingest the original inputs into a fresh directory"
     );
     Ok(())
 }
@@ -158,7 +197,7 @@ pub(super) fn create(root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Open the writable catalog and upgrade an older SQLite schema as needed.
+/// Open the writable catalog.
 ///
 /// The caller must hold the repository lock while writing.
 pub fn write(root: &Path) -> Result<Catalog> {
@@ -170,9 +209,6 @@ pub fn write(root: &Path) -> Result<Catalog> {
     connection.busy_timeout(std::time::Duration::from_secs(5))?;
     validate(&connection)?;
     configure(&connection, true)?;
-    if connection.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))? == 1 {
-        connection.execute_batch("BEGIN IMMEDIATE; ALTER TABLE occurrences ADD COLUMN structural INTEGER NOT NULL DEFAULT 0 CHECK(structural IN (0,1)); CREATE TABLE operation_inputs(operation_id TEXT NOT NULL REFERENCES operations(id),source_path TEXT NOT NULL,state TEXT NOT NULL,error TEXT,PRIMARY KEY(operation_id,source_path)); PRAGMA user_version=2; COMMIT;")?;
-    }
     validate_relationships(&connection)?;
     Ok(Catalog { connection })
 }
@@ -182,80 +218,212 @@ fn enum_text(value: &impl serde::Serialize) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("invalid enum value"))?
         .to_owned())
 }
-fn insert(connection: &Connection, row: &Occurrence) -> Result<()> {
+const OCCURRENCES: &str = "SELECT o.id,o.hash,b.size,o.structural,o.input_mode,o.file_type,
+    o.original_name,o.original_entry_name,o.original_stem,o.original_extension,
+    o.source_archive,o.source_path,o.entry_index,o.encrypted,o.ingest_date,o.run_id,
+    o.detected_format,o.detected_family,o.mime_type,o.confidence,o.detector_version,
+    o.mismatch,o.mismatch_reason,o.evidence,o.alternatives,o.source_id,o.source_url,o.source_name,
+    a.occurrence_id AS ancestor_id,a.parent_id,a.parent_hash,a.nested_version,a.root_source,
+    a.root_input_hash,a.archive_depth,a.entry_chain
+    FROM occurrences o JOIN objects b ON o.hash=b.hash
+    LEFT JOIN ancestry a ON a.occurrence_id=o.id";
+
+fn validate_occurrence(row: &Occurrence) -> Result<()> {
     row.validate()?;
-    let serialized = serde_json::to_string(row)?;
     ensure!(
-        serialized.len() <= 1024 * 1024,
+        row.detection.detector_version != "bfs-2",
+        "obsolete bfs-2 detection; re-ingest the original inputs into a fresh directory"
+    );
+    Ok(())
+}
+
+fn decode_occurrence(row: &rusqlite::Row<'_>) -> Result<Occurrence> {
+    use super::metadata::NestedProvenance;
+    use crate::{
+        collection::acquisition::Candidate,
+        detection::{classifier::Detection, mismatch::Evaluation},
+    };
+
+    // Bound persisted metadata before allocating strings or parsing arrays.
+    let mut bytes = 0;
+    for index in 0..row.as_ref().column_count() {
+        if let rusqlite::types::ValueRef::Text(text) = row.get_ref(index)? {
+            bytes += text.len();
+            ensure!(bytes <= 1024 * 1024, "oversized occurrence record");
+        }
+    }
+
+    fn read_enum<T: serde::de::DeserializeOwned>(
+        row: &rusqlite::Row<'_>,
+        column: &str,
+    ) -> Result<T> {
+        Ok(serde_json::from_value(serde_json::Value::String(
+            row.get(column)?,
+        ))?)
+    }
+
+    let nested = if row.get::<_, Option<String>>("ancestor_id")?.is_some() {
+        Some(NestedProvenance {
+            schema_version: row.get("nested_version")?,
+            parent_occurrence_id: row.get("parent_id")?,
+            parent_sha256: row.get("parent_hash")?,
+            root_source: row.get("root_source")?,
+            root_input_hash: row.get("root_input_hash")?,
+            archive_depth: usize::try_from(row.get::<_, i64>("archive_depth")?)?,
+            entry_chain: serde_json::from_str(row.get_ref("entry_chain")?.as_str()?)?,
+        })
+    } else {
+        None
+    };
+    let provenance = match (
+        row.get("source_id")?,
+        row.get("source_url")?,
+        row.get("source_name")?,
+    ) {
+        (Some(source_id), Some(url), Some(name)) => Some(Candidate {
+            source_id,
+            url,
+            name,
+        }),
+        (None, None, None) => None,
+        _ => anyhow::bail!("incomplete remote provenance"),
+    };
+    let record = Occurrence {
+        nested,
+        provenance,
+        structural: row.get("structural")?,
+        detection: Detection {
+            detected_format: read_enum(row, "detected_format")?,
+            detected_family: read_enum(row, "detected_family")?,
+            mime_type: row.get("mime_type")?,
+            confidence: read_enum(row, "confidence")?,
+            detector_version: row.get("detector_version")?,
+            evidence: serde_json::from_str(row.get_ref("evidence")?.as_str()?)?,
+            alternatives: serde_json::from_str(row.get_ref("alternatives")?.as_str()?)?,
+        },
+        mismatch: Evaluation {
+            status: read_enum(row, "mismatch")?,
+            reason: row.get("mismatch_reason")?,
+        },
+        input_mode: read_enum(row, "input_mode")?,
+        occurrence_id: row.get("id")?,
+        sha256: row.get("hash")?,
+        size: u64::try_from(row.get::<_, i64>("size")?)?,
+        file_type: row.get("file_type")?,
+        original_name: row.get("original_name")?,
+        original_entry_name: row.get("original_entry_name")?,
+        original_stem: row.get("original_stem")?,
+        original_extension: row.get("original_extension")?,
+        source_archive: row.get("source_archive")?,
+        source_path: row.get("source_path")?,
+        entry_index: usize::try_from(row.get::<_, i64>("entry_index")?)?,
+        encrypted: row.get("encrypted")?,
+        ingest_date: row.get("ingest_date")?,
+        run_id: row.get("run_id")?,
+    };
+    validate_occurrence(&record)?;
+    Ok(record)
+}
+
+fn occurrence(connection: &Connection, id: &str) -> Result<Option<Occurrence>> {
+    let mut statement = connection.prepare_cached(&format!("{OCCURRENCES} WHERE o.id=?1"))?;
+    let mut rows = statement.query([id])?;
+    rows.next()?.map(decode_occurrence).transpose()
+}
+
+fn insert(connection: &Connection, row: &Occurrence) -> Result<()> {
+    validate_occurrence(row)?;
+    ensure!(
+        serde_json::to_vec(row)?.len() <= 1024 * 1024,
         "oversized occurrence record"
     );
     let size = i64::try_from(row.size)?;
-    let index = i64::try_from(row.entry_index)?;
-    let old = connection.query_row(
-        "SELECT hash,size FROM objects WHERE hash=?1",
+    connection.execute(
+        "INSERT INTO objects(hash,size) VALUES(?1,?2) ON CONFLICT(hash) DO NOTHING",
+        params![row.sha256, size],
+    )?;
+    let stored: i64 = connection.query_row(
+        "SELECT size FROM objects WHERE hash=?1",
         [&row.sha256],
-        |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
-    );
-    match old {
-        Ok((_, existing)) => ensure!(existing == size, "conflicting object size"),
-        Err(rusqlite::Error::QueryReturnedNoRows) => {
+        |r| r.get(0),
+    )?;
+    ensure!(stored == size, "conflicting object size");
+    if let Some(previous) = occurrence(connection, &row.occurrence_id)? {
+        ensure!(
+            previous.sha256 == row.sha256,
+            "conflicting occurrence metadata"
+        );
+        if previous.structural && !row.structural {
             connection.execute(
-                "INSERT INTO objects(hash,size) VALUES(?1,?2)",
-                params![row.sha256, size],
+                "UPDATE occurrences SET structural=0 WHERE id=?1",
+                [&row.occurrence_id],
             )?;
         }
-        Err(e) => return Err(e.into()),
+        return Ok(());
     }
-    let old = connection.query_row(
-        "SELECT hash,record FROM occurrences WHERE id=?1",
-        [&row.occurrence_id],
-        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-    );
-    match old {
-        Ok((hash, record)) => {
-            let previous: Occurrence = serde_json::from_str(&record)?;
-            previous.validate()?;
-            ensure!(
-                hash == row.sha256
-                    && previous.sha256 == hash
-                    && previous.occurrence_id == row.occurrence_id
-                    && previous.size == row.size,
-                "conflicting occurrence metadata"
-            );
-            if previous.structural && !row.structural {
-                let mut promoted = previous;
-                promoted.structural = false;
-                connection.execute(
-                    "UPDATE occurrences SET structural=0,record=?1 WHERE id=?2",
-                    params![serde_json::to_string(&promoted)?, row.occurrence_id],
-                )?;
-            }
-            return Ok(());
-        }
-        Err(rusqlite::Error::QueryReturnedNoRows) => (),
-        Err(e) => return Err(e.into()),
-    }
-    connection.execute("INSERT INTO occurrences(id,hash,normalized_extension,detected_format,mismatch,source_path,entry_index,record,structural) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![row.occurrence_id,row.sha256,crate::detection::mismatch::normalize_extension(&row.original_extension),enum_text(&row.detection.detected_format)?,row.mismatch.status.as_str(),row.source_path,index,serde_json::to_string(row)?,row.structural])?;
+    let remote = row.provenance.as_ref();
+    let d = &row.detection;
+    connection.execute(
+        "INSERT INTO occurrences(id,hash,structural,input_mode,file_type,original_name,
+            original_entry_name,original_stem,original_extension,source_archive,source_path,
+            entry_index,encrypted,ingest_date,run_id,detected_format,detected_family,mime_type,
+            confidence,detector_version,mismatch,mismatch_reason,evidence,alternatives,source_id,
+            source_url,source_name)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        params![
+            row.occurrence_id,
+            row.sha256,
+            row.structural,
+            enum_text(&row.input_mode)?,
+            row.file_type,
+            row.original_name,
+            row.original_entry_name,
+            row.original_stem,
+            row.original_extension,
+            row.source_archive,
+            row.source_path,
+            i64::try_from(row.entry_index)?,
+            row.encrypted,
+            row.ingest_date,
+            row.run_id,
+            d.detected_format.as_str(),
+            d.detected_family.as_str(),
+            d.mime_type,
+            d.confidence.as_str(),
+            d.detector_version,
+            row.mismatch.status.as_str(),
+            row.mismatch.reason,
+            serde_json::to_string(&d.evidence)?,
+            serde_json::to_string(&d.alternatives)?,
+            remote.map(|r| &r.source_id),
+            remote.map(|r| &r.url),
+            remote.map(|r| &r.name)
+        ],
+    )?;
     if let Some(n) = &row.nested {
         connection.execute(
-            "INSERT INTO ancestry(occurrence_id,parent_id,parent_hash) VALUES(?1,?2,?3)",
-            params![row.occurrence_id, n.parent_occurrence_id, n.parent_sha256],
+            "INSERT INTO ancestry(occurrence_id,parent_id,parent_hash,nested_version,root_source,
+                root_input_hash,archive_depth,entry_chain) VALUES(?,?,?,?,?,?,?,?)",
+            params![
+                row.occurrence_id,
+                n.parent_occurrence_id,
+                n.parent_sha256,
+                n.schema_version,
+                n.root_source,
+                n.root_input_hash,
+                i64::try_from(n.archive_depth)?,
+                serde_json::to_string(&n.entry_chain)?
+            ],
         )?;
     }
     Ok(())
 }
-fn predicate(
-    filters: &Filters,
-    include_removed: bool,
-    structural_supported: bool,
-) -> Result<(String, Vec<Value>)> {
+fn predicate(filters: &Filters, include_removed: bool) -> Result<(String, Vec<Value>)> {
     filters.validate()?;
     let mut clauses = Vec::new();
     let mut values = Vec::new();
     if !include_removed {
-        if structural_supported {
-            clauses.push("o.structural=0".into());
-        }
+        clauses.push("o.structural=0".into());
         clauses.push("NOT EXISTS(SELECT 1 FROM tombstones t WHERE t.id=o.id)".to_owned());
     }
     for (column, list, exclude) in [
@@ -364,27 +532,28 @@ impl Catalog {
     pub fn update_classifications(&mut self, rows: &[Occurrence]) -> Result<()> {
         let transaction = self.connection.transaction()?;
         for row in rows {
-            row.validate()?;
-            let text: String = transaction.query_row(
-                "SELECT record FROM occurrences WHERE id=?1",
-                [&row.occurrence_id],
-                |r| r.get(0),
-            )?;
-            let mut original: Occurrence = serde_json::from_str(&text)?;
+            validate_occurrence(row)?;
+            let mut original = occurrence(&transaction, &row.occurrence_id)?
+                .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
             ensure!(
                 original.sha256 == row.sha256 && original.size == row.size,
                 "classification identity mismatch"
             );
-            original.detection = row.detection.clone();
-            original.mismatch = row.mismatch.clone();
+            original.detection.clone_from(&row.detection);
+            original.mismatch.clone_from(&row.mismatch);
+            validate_occurrence(&original)?;
+            ensure!(
+                serde_json::to_vec(&original)?.len() <= 1024 * 1024,
+                "oversized occurrence record"
+            );
+            let d = &original.detection;
             transaction.execute(
-                "UPDATE occurrences SET detected_format=?1,mismatch=?2,record=?3 WHERE id=?4",
-                params![
-                    enum_text(&original.detection.detected_format)?,
-                    original.mismatch.status.as_str(),
-                    serde_json::to_string(&original)?,
-                    original.occurrence_id
-                ],
+                "UPDATE occurrences SET detected_format=?,detected_family=?,mime_type=?,confidence=?,
+                    detector_version=?,mismatch=?,mismatch_reason=?,evidence=?,alternatives=? WHERE id=?",
+                params![d.detected_format.as_str(), d.detected_family.as_str(), d.mime_type,
+                    d.confidence.as_str(), d.detector_version, original.mismatch.status.as_str(),
+                    original.mismatch.reason, serde_json::to_string(&d.evidence)?,
+                    serde_json::to_string(&d.alternatives)?, original.occurrence_id],
             )?;
         }
         transaction.commit()?;
@@ -395,59 +564,20 @@ impl Catalog {
     /// Set `include_removed` to include both tombstoned and structural records.
     /// Ordinary queries keep it false to return visible, active occurrences.
     pub fn select(&self, filters: &Filters, include_removed: bool) -> Result<Vec<Occurrence>> {
-        let structural_supported =
-            self.connection
-                .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))?
-                >= 2;
-        let structural = if structural_supported {
-            "o.structural"
-        } else {
-            "0"
-        };
-        let (predicate, values) = predicate(filters, include_removed, structural_supported)?;
-        let mut statement=self.connection.prepare(&format!("SELECT o.record,o.id,o.hash,b.size,o.normalized_extension,o.detected_format,o.mismatch,o.source_path,o.entry_index,{structural},a.occurrence_id,a.parent_id,a.parent_hash FROM occurrences o JOIN objects b ON o.hash=b.hash LEFT JOIN ancestry a ON a.occurrence_id=o.id WHERE {predicate} ORDER BY o.source_path,o.entry_index,o.id"))?;
+        let (predicate, values) = predicate(filters, include_removed)?;
+        let mut statement = self.connection.prepare(&format!(
+            "{OCCURRENCES} WHERE {predicate} ORDER BY o.source_path,o.entry_index,o.id"
+        ))?;
         let mut query = statement.query(rusqlite::params_from_iter(values))?;
         let mut result = Vec::new();
         while let Some(row) = query.next()? {
-            let text: String = row.get(0)?;
-            ensure!(text.len() <= 1024 * 1024, "oversized occurrence record");
-            let record: Occurrence = serde_json::from_str(&text)?;
-            record.validate()?;
-            ensure!(
-                record.occurrence_id == row.get::<_, String>(1)?
-                    && record.sha256 == row.get::<_, String>(2)?
-                    && i64::try_from(record.size)? == row.get::<_, i64>(3)?
-                    && crate::detection::mismatch::normalize_extension(&record.original_extension)
-                        == row.get::<_, String>(4)?
-                    && enum_text(&record.detection.detected_format)? == row.get::<_, String>(5)?
-                    && record.mismatch.status.as_str() == row.get::<_, String>(6)?
-                    && record.source_path == row.get::<_, String>(7)?
-                    && i64::try_from(record.entry_index)? == row.get::<_, i64>(8)?
-                    && record.structural == row.get::<_, bool>(9)?,
-                "catalog record/index identity mismatch"
-            );
-            let ancestor_id: Option<String> = row.get(10)?;
-            let parent: Option<String> = row.get(11)?;
-            let hash: Option<String> = row.get(12)?;
-            match (&record.nested, ancestor_id) {
-                (None, None) => (),
-                (Some(n), Some(_)) => ensure!(
-                    n.parent_occurrence_id == parent && Some(&n.parent_sha256) == hash.as_ref(),
-                    "catalog nested provenance/index mismatch"
-                ),
-                _ => anyhow::bail!("catalog nested provenance/index mismatch"),
-            }
-            result.push(record);
+            result.push(decode_occurrence(row)?);
         }
         Ok(result)
     }
     /// Count visible occurrences and distinct object hashes directly in SQL.
     pub fn counts(&self, filters: &Filters) -> Result<Counts> {
-        let structural_supported =
-            self.connection
-                .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))?
-                >= 2;
-        let (predicate, values) = predicate(filters, false, structural_supported)?;
+        let (predicate, values) = predicate(filters, false)?;
         let (occurrences,unique_objects):(i64,i64)=self.connection.query_row(&format!("SELECT count(*),count(DISTINCT o.hash) FROM occurrences o JOIN objects b ON o.hash=b.hash WHERE {predicate}"),rusqlite::params_from_iter(values),|r|Ok((r.get(0)?,r.get(1)?)))?;
         Ok(Counts {
             occurrences: u64::try_from(occurrences)?,
@@ -546,13 +676,6 @@ impl Catalog {
         Ok(())
     }
     pub fn inputs(&self, operation_id: &str) -> Result<Vec<crate::operations::InputOutcome>> {
-        if self
-            .connection
-            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))?
-            < 2
-        {
-            return Ok(vec![]);
-        }
         let mut statement = self.connection.prepare("SELECT source_path,state,error FROM operation_inputs WHERE operation_id=?1 ORDER BY source_path")?;
         Ok(statement
             .query_map([operation_id], |r| {

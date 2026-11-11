@@ -9,7 +9,7 @@ renders, follows links, or recursively extracts content. Permissions are not a s
 Each occurrence retains its original name, final original extension, archive entry,
 source provenance, SHA-256, size and identity. New `detection` metadata contains
 `detected_family`, `detected_format`, optional `mime_type`, `confidence`, `evidence`,
-`alternatives`, and `detector_version` (`bfs-2`). New `mismatch` metadata contains
+`alternatives`, and `detector_version` (`bfsort-3`). New `mismatch` metadata contains
 `status` and `reason`. Detection is performed before the staging handle is sealed
 and published, using the prefix captured during the existing hash/copy pass.
 

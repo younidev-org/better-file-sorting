@@ -52,7 +52,7 @@ impl Repository {
                 stored == mode,
                 "repository security mode cannot be changed automatically"
             );
-            super::catalog::require(root)?;
+            super::catalog::read(root)?;
         } else {
             super::catalog::create(root)?;
             let mut file = tempfile::NamedTempFile::new_in(root)?;
@@ -110,7 +110,7 @@ impl Repository {
         let lock = File::open(lock_path)?;
         lock.try_lock()
             .map_err(|_| anyhow::anyhow!("repository is in use by another process"))?;
-        super::catalog::require(root)?;
+        super::catalog::read(root)?;
         for name in ["objects", "views", "reports", ".staging"] {
             crate::ingest::discovery::check_path(&root.join(name))?;
             ensure!(root.join(name).is_dir(), "incomplete repository");

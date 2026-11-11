@@ -112,7 +112,7 @@ impl Confidence {
         }
     }
 }
-pub const DETECTOR_VERSION: &str = "bfs-2";
+pub const DETECTOR_VERSION: &str = "bfsort-3";
 pub const PREFIX_LIMIT: usize = 8192;
 const ZIP_DIRECTORY_LIMIT: usize = 1024 * 1024;
 const ZIP_ENTRY_LIMIT: usize = 4096;
