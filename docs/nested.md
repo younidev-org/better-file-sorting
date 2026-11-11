@@ -134,7 +134,7 @@ remain snapshots and are not rewritten.
 Tree reports include archive reuse/decompression counts, bytes and accumulated
 stage durations. Parallel stage totals can overlap and exceed wall time. Hashing occurs inside streaming extraction, so extraction time includes streaming
 hash work; `hashing_seconds` and `detection_seconds` expose their measured costs separately. Progress
-shows elapsed time and counts without ETA. Actual savings depend on the filesystem,
+shows elapsed time and counts. Actual savings depend on the filesystem,
 compression and duplicate frequency; use measured results rather than estimates.
 
 Filters also apply to nested ingestion and analysis. Traversal and budget accounting include excluded entries; required archive ancestors are retained as structural SQL records, hidden from ordinary selections. Reclassification accepts the same selectors. Changed nested filter settings require compatible recovery state or a fresh repository.

@@ -246,6 +246,14 @@ pub struct Ingest {
     /// Extract ZIP contents using bounded archive processing
     #[arg(long, conflicts_with = "input_mode")]
     pub extract: bool,
+    /// Extract ZIP entries into a new directory without classification or a repository
+    #[arg(long, conflicts_with_all = [
+        "input_mode", "resume", "dry_run", "zip", "zip_dirs", "zip_each_dir",
+        "output_password_file", "rules", "preset", "naming", "compression_level",
+        "include_ext", "exclude_ext", "include_format", "exclude_format", "sha256",
+        "mismatch", "min_size", "max_size",
+    ])]
+    pub unzip_only: bool,
     /// Publish only a compressed ZIP at --output, leaving sources untouched
     #[arg(long)]
     pub zip: bool,

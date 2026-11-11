@@ -11,8 +11,9 @@ use std::{
 static PROGRESS: AtomicBool = AtomicBool::new(false);
 static COLOR: AtomicBool = AtomicBool::new(false);
 static BARS: LazyLock<Mutex<indicatif::MultiProgress>> = LazyLock::new(|| {
+    // Send cursor changes and replacement text together to avoid an empty frame.
     Mutex::new(indicatif::MultiProgress::with_draw_target(
-        indicatif::ProgressDrawTarget::stderr_with_hz(8),
+        indicatif::ProgressDrawTarget::term(console::Term::buffered_stderr(), 8),
     ))
 });
 
@@ -88,14 +89,29 @@ impl Progress {
             total,
             indicatif::ProgressDrawTarget::hidden(),
         );
+        let color = COLOR.load(Ordering::Relaxed);
+        let template = if let Some(total) = total {
+            let digits = total.checked_ilog10().map_or(1, |log| log + 1);
+            let meter = if color {
+                "{bar:12.cyan/blue}"
+            } else {
+                "{bar:12}"
+            };
+            format!(
+                "{{prefix}} [{meter}] {{pos:>{digits}}}/{{len}} {{percent:>3}}% [{{elapsed_precise}}] {{msg}}"
+            )
+        } else {
+            let spinner = if color {
+                "{spinner:.cyan}"
+            } else {
+                "{spinner}"
+            };
+            format!("{{prefix}} {spinner} [{{elapsed_precise}}] {{msg}}")
+        };
         bar.set_style(
-            indicatif::ProgressStyle::with_template(match (total.is_some(), COLOR.load(Ordering::Relaxed)) {
-                (true, true) => "{prefix} [{wide_bar:.cyan/blue}] {pos}/{len} {percent}% [{elapsed_precise}] {per_sec} ETA {eta_precise} {msg}",
-                (true, false) => "{prefix} [{wide_bar}] {pos}/{len} {percent}% [{elapsed_precise}] {per_sec} ETA {eta_precise} {msg}",
-                (false, true) => "{prefix} {spinner:.cyan} [{elapsed_precise}] {msg}",
-                (false, false) => "{prefix} {spinner} [{elapsed_precise}] {msg}",
-            })
-            .expect("static progress template").progress_chars("=>-"),
+            indicatif::ProgressStyle::with_template(&template)
+                .expect("static progress template")
+                .progress_chars("=>-"),
         );
         bar.set_prefix(operation.to_owned());
         if PROGRESS.load(Ordering::Relaxed) {

@@ -132,3 +132,60 @@ fn tampered_aes_authentication_tag_is_rejected() {
     assert_eq!(out.status.code(), Some(1));
     assert!(common::manifest(&output).is_empty());
 }
+
+#[test]
+fn unzip_only_uses_configured_passwords_and_seals_multiple_archives() {
+    let temp = tempfile::tempdir().unwrap();
+    let encrypted = temp.path().join("encrypted.zip");
+    let plain = temp.path().join("plain.zip");
+    let mut zip = ZipWriter::new(File::create(&encrypted).unwrap());
+    zip.add_directory("empty/", SimpleFileOptions::default())
+        .unwrap();
+    zip.start_file(
+        "payload.txt",
+        SimpleFileOptions::default().with_aes_encryption(zip::AesMode::Aes256, "fixture"),
+    )
+    .unwrap();
+    zip.write_all(b"encrypted fixture").unwrap();
+    zip.finish().unwrap();
+    common::archive(&plain, &[("payload.txt", b"plain fixture")]);
+
+    let passwords = temp.path().join("passwords.txt");
+    std::fs::write(&passwords, "fixture\n").unwrap();
+    std::fs::set_permissions(&passwords, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let config = temp.path().join("ingest.toml");
+    std::fs::write(
+        &config,
+        format!("password_file = {:?}\n", passwords.to_str().unwrap()),
+    )
+    .unwrap();
+    let output = temp.path().join("extracted");
+    let result = common::run(&[
+        "ingest".as_ref(),
+        "--unzip-only".as_ref(),
+        "-c".as_ref(),
+        config.as_os_str(),
+        encrypted.as_os_str(),
+        plain.as_os_str(),
+        "-o".as_ref(),
+        output.as_os_str(),
+    ]);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(output.join("encrypted/empty").is_dir());
+    for (relative, expected) in [
+        ("encrypted/payload.txt", &b"encrypted fixture"[..]),
+        ("plain/payload.txt", &b"plain fixture"[..]),
+    ] {
+        let file = output.join(relative);
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0
+        );
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(std::fs::read(file).unwrap(), expected);
+    }
+}

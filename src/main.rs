@@ -408,6 +408,21 @@ fn run(cli: Cli) -> Result<u8> {
             if ui.verbose {
                 effective(&config);
             }
+            if args.unzip_only {
+                let report = bfsort::ingest::unzip::run(&config, &cancelled)?;
+                output(
+                    ui,
+                    &report,
+                    &format!(
+                        "Extracted {} files from {} ZIPs ({}) to {}",
+                        report.files,
+                        report.archives,
+                        bfsort::app::presentation::bytes(report.expanded_bytes),
+                        bfsort::app::presentation::safe_text(&config.output.display().to_string())
+                    ),
+                )?;
+                return Ok(0);
+            }
             if args.dry_run {
                 let preview = bfsort::ingest::pipeline::preview(&config, &cancelled)?;
                 output(

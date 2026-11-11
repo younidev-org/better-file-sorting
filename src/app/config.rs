@@ -213,7 +213,7 @@ impl Config {
         if let Some(mode) = args.input_mode {
             c.input_mode = mode;
         }
-        if args.extract {
+        if args.extract || args.unzip_only {
             c.input_mode = InputMode::Archives;
         }
         if args.zip {

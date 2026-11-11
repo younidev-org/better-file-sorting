@@ -839,7 +839,7 @@ struct IngestCheckpoint {
 }
 
 /// Streaming verification deliberately rereads inputs and readable canonical objects.
-fn hash_input(path: &Path, cancelled: &AtomicBool) -> Result<String> {
+pub(super) fn hash_input(path: &Path, cancelled: &AtomicBool) -> Result<String> {
     discovery::check_path(path)?;
     let mut file = File::open(path)?;
     let mut digest = Sha256::new();

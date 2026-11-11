@@ -229,3 +229,76 @@ fn archive_open_accepts_more_than_old_input_and_entry_caps() {
         .is_err()
     );
 }
+
+#[test]
+fn unzip_only_preserves_paths_without_a_repository() {
+    use crate::common::{archive, run};
+
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("survey.zip");
+    let output = temp.path().join("extracted");
+    archive(
+        &input,
+        &[("docs/report.pdf", b"plain text"), ("notes.txt", b"hello")],
+    );
+    let result = run(&[
+        "ingest".as_ref(),
+        "--unzip-only".as_ref(),
+        input.as_os_str(),
+        "--security-mode".as_ref(),
+        "standard".as_ref(),
+        "-o".as_ref(),
+        output.as_os_str(),
+    ]);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        std::fs::read(output.join("docs/report.pdf")).unwrap(),
+        b"plain text"
+    );
+    assert_eq!(std::fs::read(output.join("notes.txt")).unwrap(), b"hello");
+    assert!(!output.join("metadata.sqlite3").exists());
+    assert!(!output.join("reports").exists());
+    let report: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(report["files"], 2);
+    assert_eq!(report["expanded_bytes"], 15);
+}
+
+#[test]
+fn unzip_only_never_publishes_partial_or_replaces_existing_output() {
+    use crate::common::{archive, run};
+
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("survey.zip");
+    let output = temp.path().join("extracted");
+    let args = [
+        "ingest".as_ref(),
+        "--unzip-only".as_ref(),
+        input.as_os_str(),
+        "-o".as_ref(),
+        output.as_os_str(),
+    ];
+    archive(
+        &input,
+        &[("first.txt", b"safe"), ("../escape.txt", b"unsafe")],
+    );
+    let result = run(&args);
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("traversal"));
+    assert!(!output.exists());
+    assert!(!temp.path().join("escape.txt").exists());
+
+    archive(&input, &[("first.txt", b"safe")]);
+    std::fs::create_dir(&output).unwrap();
+    std::fs::write(output.join("first.txt"), b"existing").unwrap();
+    let result = run(&args);
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("output already exists"));
+    assert_eq!(
+        std::fs::read(output.join("first.txt")).unwrap(),
+        b"existing"
+    );
+}

@@ -20,8 +20,8 @@ stream independently. `NO_COLOR` disables auto color; `--no-color` overrides an
 explicit color selection. Cyan denotes headings/progress, green completion,
 yellow partial results, and red errors. Text labels carry the same meaning
 without color. Progress uses one shared line on interactive stderr.
-Known totals include percentage and ETA; unknown work uses a spinner with elapsed
-time. `--no-progress` hides loading indicators while retaining final results.
+Known totals show completed work, percentage, and elapsed time. Unknown work uses
+a spinner with elapsed time. `--no-progress` hides loading indicators while retaining final results.
 
 `--json` writes machine-readable results without color or progress.
 JSON/CSV mismatch formats never contain styling. `--quiet` suppresses
@@ -93,6 +93,23 @@ See [recovery](recovery.md).
 `--dry-run` previews layout by reading/hashing inputs in disposable private
 storage. It publishes no repository, output ZIP or durable resume checkpoint.
 It can require archive passwords and substantial temporary disk space.
+
+## Extract ZIPs without repository metadata
+
+```sh
+bfsort ingest --unzip-only ./incoming -o ./extracted
+bfsort ingest --unzip-only -c ./ingest.toml --security-mode standard -o ./extracted
+```
+
+`--unzip-only` extracts regular files and directories with their archive paths.
+A single ZIP extracts directly into the destination. Multiple ZIPs each get a
+directory named after the ZIP's filename stem. Choose a destination that does
+not exist. Path, password, integrity, and extraction-limit checks still apply.
+
+The destination is published after every ZIP succeeds. Output files default to
+sealed permissions (`0000`); use `--security-mode standard` for readable
+owner-only files (`0600`). Nested ZIP entries are kept as files. Extraction-only
+runs do not classify files or create a repository or resume checkpoint.
 
 ## Direct ZIP output
 
