@@ -227,6 +227,10 @@ pub fn mismatches<'a>(
     minimum: crate::detection::classifier::Confidence,
     all: bool,
 ) -> MismatchReport<'a> {
+    let progress = crate::app::presentation::Progress::new(
+        Some(records.len() as u64),
+        "Scanning mismatch records",
+    );
     let mut counts = BTreeMap::new();
     let mut rows = vec![];
     let mut sorted: Vec<_> = records.iter().collect();
@@ -238,6 +242,7 @@ pub fn mismatches<'a>(
         ))
     });
     for r in sorted {
+        progress.0.inc(1);
         *counts.entry(r.mismatch.status.as_str().into()).or_insert(0) += 1;
         let included = if !statuses.is_empty() {
             statuses.contains(&r.mismatch.status)

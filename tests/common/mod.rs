@@ -52,7 +52,7 @@ pub fn ingest(input: &Path, output: &Path, workers: &str) -> Output {
         workers.as_ref(),
     ])
 }
-/// Read all JSONL occurrence records from a test repository.
+/// Read occurrence records from a test repository's catalog.
 pub fn manifest(root: &Path) -> Vec<serde_json::Value> {
     bfsort::repository::metadata::load_all(root)
         .unwrap()

@@ -205,8 +205,8 @@ fn save_record(root: &Path, path: &Path, record: &Record) -> Result<()> {
     }
 }
 
-/// Load only legacy interchange records, without opening or creating a catalog.
-pub fn load_legacy(root: &Path) -> Result<Vec<Record>> {
+/// Load collection history from its operation records.
+fn load_collection_records(root: &Path) -> Result<Vec<Record>> {
     let directory = root.join("operations/history");
     check_path(&directory)?;
     if !directory.try_exists()? {
@@ -230,14 +230,14 @@ pub fn load_legacy(root: &Path) -> Result<Vec<Record>> {
 }
 
 fn load_records(root: &Path) -> Result<Vec<Record>> {
-    if repository_root(root)? && catalog::exists(root)? {
+    if repository_root(root)? {
         catalog::read(root)?
             .operations()?
             .iter()
             .map(|record| Ok(serde_json::from_str(record)?))
             .collect()
     } else {
-        load_legacy(root)
+        load_collection_records(root)
     }
 }
 
@@ -403,7 +403,6 @@ pub fn status(root: &Path) -> Result<Vec<Record>> {
         ensure!(
             repository_root(root)?
                 || root.join("inventory.json").is_file()
-                || root.join("inventory.jsonl").is_file()
                 || root.join("downloads").is_dir(),
             "not a repository or collection root"
         );

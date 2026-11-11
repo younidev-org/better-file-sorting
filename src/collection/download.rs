@@ -12,7 +12,10 @@ const TRANSFER_BUFFER_BYTES: usize = 16 * 1024;
 const MAX_FILENAME_BYTES: usize = 240;
 
 use crate::{
-    app::config::SecurityMode,
+    app::{
+        config::SecurityMode,
+        presentation::{Progress, byte_progress, byte_rate},
+    },
     collection::acquisition::*,
     collection::http_source::{HttpSource, wait_until},
     repository::security,
@@ -149,6 +152,14 @@ struct Budget {
     pace: Instant,
     completed: usize,
     failed: usize,
+    known_sizes: usize,
+    expected_bytes: Option<u64>,
+}
+impl Budget {
+    fn record_size(&mut self, size: u64) {
+        self.known_sizes += 1;
+        self.expected_bytes = self.expected_bytes.and_then(|sum| sum.checked_add(size));
+    }
 }
 pub fn run(
     config: &DownloadConfig,
@@ -187,6 +198,8 @@ pub fn run(
         pace: Instant::now(),
         completed: 0,
         failed: 0,
+        known_sizes: 0,
+        expected_bytes: Some(0),
     });
     ensure!(
         staging_limit.is_none_or(|limit| budget.lock().unwrap().staged <= limit),
@@ -225,24 +238,33 @@ pub fn run(
             report.not_attempted += 1;
         }
     }
-    let progress_started = Instant::now();
-    let progress = crate::app::presentation::Progress::new(None, "Collecting");
-    let selected = report.candidates.len();
-    budget.lock().unwrap().completed = report.cached;
-    progress.0.set_message(transfer_progress(
-        report.cached,
-        selected,
-        0,
-        0,
-        progress_started.elapsed(),
-    ));
+    let selected = report.cached + work.len();
+    let progress = Progress::new(Some(selected as u64), "Downloading files");
+    let cached = report.cached;
+    let transfer_message = |budget: &Budget| {
+        transfer_progress(
+            budget.failed,
+            cached,
+            budget.transferred,
+            budget
+                .expected_bytes
+                .filter(|_| budget.known_sizes == work.len()),
+            progress.0.elapsed(),
+        )
+    };
+    {
+        let mut budget = budget.lock().unwrap();
+        budget.completed = cached;
+        progress.0.set_position(cached as u64);
+        progress.0.set_message(transfer_message(&budget));
+    }
     let results = Mutex::new(vec![]);
     rayon::ThreadPoolBuilder::new()
         .num_threads(config.concurrency)
         .build()?
         .install(|| {
             work.par_iter().for_each(|candidate| {
-                let result = (|| -> Result<()> {
+                let result = (|| -> Result<Option<u64>> {
                     ensure!(!cancelled.load(Ordering::Relaxed), "interrupted");
                     let started = Instant::now();
                     let timeout = config.timeout_seconds.map(Duration::from_secs);
@@ -274,6 +296,13 @@ pub fn run(
                         .get("content-length")
                         .and_then(|v| v.to_str().ok())
                         .and_then(|s| s.parse::<u64>().ok());
+                    if let Some(length) = expected {
+                        let mut b = budget.lock().unwrap();
+                        b.record_size(length);
+                        if b.known_sizes == work.len() {
+                            progress.0.set_message(transfer_message(&b));
+                        }
+                    }
                     let mut reader = crate::collection::http_source::CancellableReader::new(
                         response.into_body(),
                         cancelled,
@@ -339,34 +368,7 @@ pub fn run(
                                 cancelled,
                             )?;
                         }
-                        let current = if config.concurrency == 1 {
-                            match expected.filter(|length| *length > 0) {
-                                Some(length) => format!(
-                                    "{}: {:.0}% ({} / {}); ",
-                                    crate::app::presentation::safe_text(&candidate.name),
-                                    (size + n as u64) as f64 * 100.0 / length as f64,
-                                    crate::app::presentation::bytes(size + n as u64),
-                                    crate::app::presentation::bytes(length)
-                                ),
-                                None => format!(
-                                    "{}: {} transferred; ",
-                                    crate::app::presentation::safe_text(&candidate.name),
-                                    crate::app::presentation::bytes(size + n as u64)
-                                ),
-                            }
-                        } else {
-                            String::new()
-                        };
-                        progress.0.set_message(format!(
-                            "{current}{}",
-                            transfer_progress(
-                                b.completed,
-                                selected,
-                                b.failed,
-                                b.transferred,
-                                progress_started.elapsed()
-                            )
-                        ));
+                        progress.streaming_message(|| transfer_message(&b));
                         drop(b);
                         size = size
                             .checked_add(n as u64)
@@ -395,22 +397,20 @@ pub fn run(
                         sha256: hash.finalize().iter().map(|b| format!("{b:02x}")).collect(),
                     };
                     save_json(&receipt_path(config, &candidate.source_id), &receipt)?;
-                    Ok(())
+                    Ok(expected.is_none().then_some(size))
                 })();
                 {
                     let mut b = budget.lock().unwrap();
-                    if result.is_ok() {
+                    if let Ok(size) = result {
+                        if let Some(size) = size {
+                            b.record_size(size);
+                        }
                         b.completed += 1;
+                        progress.0.set_position(b.completed as u64);
                     } else {
                         b.failed += 1;
                     }
-                    progress.0.set_message(transfer_progress(
-                        b.completed,
-                        selected,
-                        b.failed,
-                        b.transferred,
-                        progress_started.elapsed(),
-                    ));
+                    progress.0.set_message(transfer_message(&b));
                 }
                 results.lock().unwrap().push(result.map_err(|e| {
                     format!(
@@ -422,43 +422,43 @@ pub fn run(
         });
     for result in results.into_inner().unwrap() {
         match result {
-            Ok(()) => report.downloaded += 1,
+            Ok(_) => report.downloaded += 1,
             Err(e) => {
                 report.failed += 1;
                 report.errors.push(e);
             }
         }
     }
+    progress.0.force_draw();
     report.bytes = budget.into_inner().unwrap().transferred;
     Ok(report)
 }
 
 fn transfer_progress(
-    completed: usize,
-    selected: usize,
     failed: usize,
+    cached: usize,
     transferred: u64,
+    total: Option<u64>,
     elapsed: Duration,
 ) -> String {
-    let rate = if elapsed.is_zero() {
-        0
-    } else {
-        (transferred as f64 / elapsed.as_secs_f64()) as u64
-    };
     format!(
-        "{completed}/{selected} files, {failed} failed, {} transferred, {}/s",
-        crate::app::presentation::bytes(transferred),
-        crate::app::presentation::bytes(rate)
+        "{} transferred · {} · {cached} cached · {failed} failed",
+        byte_progress(transferred, total),
+        byte_rate(transferred, elapsed),
     )
 }
 
 #[cfg(test)]
 mod progress_tests {
+    use super::*;
+
     #[test]
-    fn transferred_bytes_have_measured_rate_without_unknown_percentage() {
-        let text = super::transfer_progress(1, 3, 0, 4096, std::time::Duration::from_secs(2));
-        assert!(text.contains("4.00 KiB transferred, 2.00 KiB/s"));
-        assert!(!text.contains('%'));
-        assert!(super::transfer_progress(0, 1, 0, 0, std::time::Duration::ZERO).contains("0 B/s"));
+    fn transferred_bytes_have_measured_rate_and_use_known_totals() {
+        let elapsed = Duration::from_secs(2);
+        let unknown = transfer_progress(0, 0, 4096, None, elapsed);
+        assert!(unknown.contains("4.00 KiB transferred · 2.00 KiB/s"));
+        let known = transfer_progress(0, 1, 4096, Some(8192), elapsed);
+        assert!(known.contains("4.00 KiB / 8.00 KiB transferred · 2.00 KiB/s · 1 cached"));
+        assert!(transfer_progress(0, 0, 0, None, Duration::ZERO).contains("0 B/s"));
     }
 }

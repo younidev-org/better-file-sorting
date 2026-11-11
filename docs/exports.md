@@ -124,9 +124,9 @@ report is encrypted with the payload entries.
 Normal export trusts repository content identities; it does not rehash source
 objects or perform an integrity audit. Resumable export hashes completed ZIPs to
 detect changes. Recovery after publication without a saved receipt checks the
-report fingerprints and every planned payload path, size and hash. Previously
-published exports with legacy JSONL indexes remain readable for recovery; new
-exports do not create those indexes. See [recovery](recovery.md).
+report fingerprints and every planned payload path, size and hash. Resume
+requires the compact export report. Use a fresh destination to recreate an
+export with obsolete indexes. See [recovery](recovery.md).
 
 ## Storage requirements
 

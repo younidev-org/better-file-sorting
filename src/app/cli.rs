@@ -26,7 +26,7 @@ pub struct Cli {
 }
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Migrate repository metadata or import legacy JSONL without copying payloads
+    /// Upgrade or import SQLite metadata without copying payloads
     Metadata {
         #[command(subcommand)]
         command: MetadataCommand,
@@ -460,8 +460,8 @@ pub enum SplitBy {
 
 #[derive(Debug, Subcommand)]
 pub enum MetadataCommand {
-    /// Atomically import a legacy repository into its private SQLite catalog
+    /// Upgrade the repository's SQLite catalog schema
     Migrate { repository: PathBuf },
-    /// Import validated JSONL occurrences; referenced objects must already exist
+    /// Import active occurrences from a SQLite catalog; referenced objects must already exist
     Import { repository: PathBuf, input: PathBuf },
 }

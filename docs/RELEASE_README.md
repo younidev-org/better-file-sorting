@@ -20,7 +20,7 @@ Permissions are not a sandbox. Existing modes never change automatically.
 Omitted budgets and deadlines are unlimited. Use an explicitly bounded config
 when resource caps are required. Resume verifies completed work; it does not mean
 byte-level extraction continuation. Merge and split create independent standard repositories. Metadata is stored in
-SQLite; legacy migration and legacy JSONL import are supported.
+SQLite. Import occurrences from an existing catalog with `metadata import`.
 
 Linux is the supported runtime platform. See [configuration](https://github.com/YounesRabeh/better-file-sorting/blob/main/docs/configuration.md),
 [portable exports](https://github.com/YounesRabeh/better-file-sorting/blob/main/docs/exports.md) and [recovery](https://github.com/YounesRabeh/better-file-sorting/blob/main/docs/recovery.md) for details.

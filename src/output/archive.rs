@@ -206,7 +206,12 @@ pub fn open(path: &Path, limits: &Limits) -> Result<ZipArchive<File>> {
 }
 /// Read archive entry metadata without extracting payloads.
 pub fn inspect(path: &Path, limits: &Limits) -> Result<Inspection> {
+    use crate::app::presentation::Progress;
+
+    let scanning = Progress::new(None, "Reading ZIP directory");
     let archive = open(path, limits)?;
+    drop(scanning);
+    let progress = Progress::new(Some(archive.len() as u64), "Inspecting ZIP entries");
     let mut entries = Vec::new();
     for index in 0..archive.len() {
         let e = archive.by_index_data(index)?;
@@ -224,6 +229,7 @@ pub fn inspect(path: &Path, limits: &Limits) -> Result<Inspection> {
             directory: e.is_dir(),
             unix_mode: e.unix_mode(),
         });
+        progress.0.inc(1);
     }
     Ok(Inspection {
         archive: path.to_string_lossy().into_owned(),
@@ -241,10 +247,22 @@ fn publish(
     cancelled: &std::sync::atomic::AtomicBool,
     records: &[crate::repository::metadata::Occurrence],
 ) -> Result<()> {
+    use crate::app::presentation::{Progress, byte_progress, bytes};
     use std::io::{Read, Write};
     use std::sync::atomic::Ordering;
-    let progress =
-        crate::app::presentation::Progress::new(Some(plan.len() as u64), "Exporting ZIP entries");
+
+    let progress = Progress::new(Some(plan.len() as u64), "Exporting ZIP entries");
+    ensure!(!cancelled.load(Ordering::Relaxed), "interrupted");
+    let (report, total) = export_report(plan, records)?;
+    let message = |read, written| {
+        format!(
+            "{} input read · {} ZIP written",
+            byte_progress(read, Some(total)),
+            bytes(written)
+        )
+    };
+    let mut read = 0u64;
+    progress.0.set_message(message(read, 0));
     check_path(output)?;
     let parent = output
         .parent()
@@ -282,14 +300,18 @@ fn publish(
             if count == 0 {
                 break;
             }
+            read = read.saturating_add(count as u64);
             zip.write_all(&buffer[..count])?;
+            progress.streaming_message(|| message(read, zip_bytes(&zip)));
         }
         progress.0.inc(1);
     }
-    progress.0.set_message("publishing ZIP metadata");
+    progress.0.set_message(message(read, zip_bytes(&zip)));
     zip.start_file("export.json", options)?;
-    serde_json::to_writer(&mut zip, &export_report(plan, records)?)?;
-    zip.finish()?;
+    serde_json::to_writer(&mut zip, &report)?;
+    let written = zip.finish()?.metadata().ok().map_or(0, |meta| meta.len());
+    progress.0.set_message(message(read, written));
+    progress.0.force_draw();
     file.as_file().sync_all()?;
     ensure!(!cancelled.load(Ordering::Relaxed), "interrupted");
     file.persist_noclobber(output)?;
@@ -297,11 +319,17 @@ fn publish(
     Ok(())
 }
 
+fn zip_bytes(zip: &zip::ZipWriter<&mut File>) -> u64 {
+    zip.get_ref()
+        .and_then(|file| file.metadata().ok())
+        .map_or(0, |meta| meta.len())
+}
+
 /// Compact report binds the payload layout and effective selected metadata without exporting records.
 fn export_report(
     plan: &[crate::organization::rules::Planned],
     records: &[crate::repository::metadata::Occurrence],
-) -> Result<serde_json::Value> {
+) -> Result<(serde_json::Value, u64)> {
     let hashes: BTreeSet<_> = plan.iter().map(|p| p.sha256.as_str()).collect();
     let mut selected: Vec<_> = records
         .iter()
@@ -325,13 +353,16 @@ fn export_report(
             .checked_add(*size)
             .ok_or_else(|| anyhow::anyhow!("export size overflow"))
     })?;
-    Ok(serde_json::json!({
-        "schema_version": 2, "kind": "bfsort-export", "tool_version": env!("CARGO_PKG_VERSION"),
-        "layout_fingerprint": crate::repository::metadata::digest(&serde_json::to_vec(plan)?),
-        "snapshot_fingerprint": crate::repository::metadata::digest(&serde_json::to_vec(&selected)?),
-        "payload_entries": plan.len(), "occurrences": selected.len(), "unique_objects": hashes.len(),
-        "logical_bytes": logical_bytes, "payload_bytes": payload_bytes
-    }))
+    Ok((
+        serde_json::json!({
+            "schema_version": 2, "kind": "bfsort-export", "tool_version": env!("CARGO_PKG_VERSION"),
+            "layout_fingerprint": crate::repository::metadata::digest(&serde_json::to_vec(plan)?),
+            "snapshot_fingerprint": crate::repository::metadata::digest(&serde_json::to_vec(&selected)?),
+            "payload_entries": plan.len(), "occurrences": selected.len(), "unique_objects": hashes.len(),
+            "logical_bytes": logical_bytes, "payload_bytes": payload_bytes
+        }),
+        payload_bytes,
+    ))
 }
 
 /// Plan an export from saved metadata and write ZIP output when requested.
@@ -588,6 +619,14 @@ fn publish_resumable(
 }
 fn verify_export_password(path: &Path, password: Option<&str>) -> Result<()> {
     let mut archive = ZipArchive::new(File::open(path)?)?;
+    read_export_report(&mut archive, password)?;
+    Ok(())
+}
+
+fn read_export_report(
+    archive: &mut ZipArchive<File>,
+    password: Option<&str>,
+) -> Result<serde_json::Value> {
     let header = if let Some(password) = password {
         archive.by_name_decrypt("export.json", password.as_bytes())?
     } else {
@@ -596,10 +635,17 @@ fn verify_export_password(path: &Path, password: Option<&str>) -> Result<()> {
     ensure!(header.size() <= 65536, "oversized export report");
     let header: serde_json::Value = serde_json::from_reader(header)?;
     ensure!(
-        header["schema_version"] == 2 && header["kind"] == "bfsort-export",
+        header["schema_version"] == 2
+            && header["kind"] == "bfsort-export"
+            && header["layout_fingerprint"]
+                .as_str()
+                .is_some_and(crate::repository::storage::valid_hash)
+            && header["snapshot_fingerprint"]
+                .as_str()
+                .is_some_and(crate::repository::storage::valid_hash),
         "unsupported ZIP export metadata"
     );
-    Ok(())
+    Ok(header)
 }
 fn verify_export_layout(
     path: &Path,
@@ -612,26 +658,14 @@ fn verify_export_layout(
     use std::io::Read;
     let progress =
         crate::app::presentation::Progress::new(Some(plan.len() as u64), "Verifying ZIP entries");
-    verify_export_password(path, password)?;
     let mut archive = ZipArchive::new(File::open(path)?)?;
-    let header: serde_json::Value = {
-        let file = if let Some(password) = password {
-            archive.by_name_decrypt("export.json", password.as_bytes())?
-        } else {
-            archive.by_name("export.json")?
-        };
-        ensure!(file.size() <= 65536, "oversized export report");
-        serde_json::from_reader(file)?
-    };
-    let compact = header.get("layout_fingerprint").is_some();
-    if compact {
-        ensure!(
-            header == export_report(plan, records)?,
-            "uncheckpointed export report mismatch"
-        );
-    }
+    let header = read_export_report(&mut archive, password)?;
     ensure!(
-        archive.len() == plan.len() + if compact { 1 } else { 3 },
+        header == export_report(plan, records)?.0,
+        "uncheckpointed export report mismatch"
+    );
+    ensure!(
+        archive.len() == plan.len() + 1,
         "uncheckpointed export has an unexpected entry count"
     );
     let sizes: BTreeMap<_, _> = records
@@ -668,72 +702,5 @@ fn verify_export_layout(
         );
         progress.0.inc(1);
     }
-    if compact {
-        return Ok(());
-    }
-    // Legacy indexes are accepted only when recovering previously published ZIPs.
-    let layout = if let Some(password) = password {
-        archive.by_name_decrypt("layout.jsonl", password.as_bytes())?
-    } else {
-        archive.by_name("layout.jsonl")?
-    };
-    verify_metadata_rows(
-        layout,
-        plan.iter()
-            .map(serde_json::to_value)
-            .collect::<std::result::Result<Vec<_>, _>>()?,
-    )?;
-    // The persisted manifest must match, not just the payload filenames.
-    let manifest = if let Some(password) = password {
-        archive.by_name_decrypt("manifest.jsonl", password.as_bytes())?
-    } else {
-        archive.by_name("manifest.jsonl")?
-    };
-    let selected: BTreeMap<_, _> = plan
-        .iter()
-        .map(|p| (p.occurrence_id.as_str(), p.path.as_str()))
-        .collect();
-    let mut by_hash = BTreeMap::new();
-    for entry in plan {
-        by_hash
-            .entry(entry.sha256.as_str())
-            .or_insert(entry.path.as_str());
-    }
-    let expected: Vec<_> = records
-        .iter()
-        .filter_map(|r| {
-            selected
-                .get(r.occurrence_id.as_str())
-                .copied()
-                .or_else(|| by_hash.get(r.sha256.as_str()).copied())
-                .map(|p| serde_json::json!({"path": p, "occurrence": r}))
-        })
-        .collect();
-    verify_metadata_rows(manifest, expected)?;
-    Ok(())
-}
-
-fn verify_metadata_rows(
-    reader: impl std::io::Read,
-    expected: impl IntoIterator<Item = serde_json::Value>,
-) -> Result<()> {
-    use std::io::{BufRead, Read};
-    let mut reader = std::io::BufReader::new(reader);
-    let mut line = Vec::new();
-    for row in expected {
-        line.clear();
-        Read::take(&mut reader, 1024 * 1024 + 1).read_until(b'\n', &mut line)?;
-        ensure!(
-            line.len() <= 1024 * 1024
-                && line.ends_with(b"\n")
-                && serde_json::from_slice::<serde_json::Value>(&line)? == row,
-            "uncheckpointed export metadata mismatch"
-        );
-    }
-    let mut end = [0];
-    ensure!(
-        reader.read(&mut end)? == 0,
-        "unexpected export metadata rows"
-    );
     Ok(())
 }

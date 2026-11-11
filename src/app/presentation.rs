@@ -2,11 +2,29 @@
 use crate::app::cli::{ColorMode, Presentation};
 use std::{
     io::IsTerminal,
-    sync::atomic::{AtomicBool, Ordering},
-    time::Duration,
+    sync::{
+        LazyLock, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
 };
 static PROGRESS: AtomicBool = AtomicBool::new(false);
 static COLOR: AtomicBool = AtomicBool::new(false);
+static BARS: LazyLock<Mutex<indicatif::MultiProgress>> = LazyLock::new(|| {
+    Mutex::new(indicatif::MultiProgress::with_draw_target(
+        indicatif::ProgressDrawTarget::stderr_with_hz(8),
+    ))
+});
+
+/// Clear the terminal before exiting a command that uses the default interrupt behavior.
+pub fn exit_on_interrupt() -> Result<(), ctrlc::Error> {
+    if PROGRESS.load(Ordering::Relaxed) {
+        ctrlc::set_handler(|| {
+            BARS.lock().unwrap().suspend(|| std::process::exit(130));
+        })?;
+    }
+    Ok(())
+}
 
 pub fn color_enabled(
     mode: ColorMode,
@@ -55,17 +73,21 @@ pub fn label(text: &str, code: &str) -> String {
     }
 }
 /// One shared aggregate bar per operation. Drop always clears it, including early errors.
-pub struct Progress(pub indicatif::ProgressBar);
+pub struct Progress(pub indicatif::ProgressBar, Mutex<Instant>);
 impl Progress {
     pub fn new(total: Option<u64>, operation: &str) -> Self {
-        let bar = match total {
-            Some(n) => indicatif::ProgressBar::new(n),
-            None => indicatif::ProgressBar::new_spinner(),
-        };
-        bar.set_draw_target(indicatif::ProgressDrawTarget::stderr_with_hz(8));
-        if !PROGRESS.load(Ordering::Relaxed) {
-            bar.set_draw_target(indicatif::ProgressDrawTarget::hidden());
-        }
+        Self::start(total, operation, None)
+    }
+
+    pub fn delayed(operation: &str) -> Self {
+        Self::start(None, operation, Some(Duration::from_millis(350)))
+    }
+
+    fn start(total: Option<u64>, operation: &str, delay: Option<Duration>) -> Self {
+        let bar = indicatif::ProgressBar::with_draw_target(
+            total,
+            indicatif::ProgressDrawTarget::hidden(),
+        );
         bar.set_style(
             indicatif::ProgressStyle::with_template(match (total.is_some(), COLOR.load(Ordering::Relaxed)) {
                 (true, true) => "{prefix} [{wide_bar:.cyan/blue}] {pos}/{len} {percent}% [{elapsed_precise}] {per_sec} ETA {eta_precise} {msg}",
@@ -76,13 +98,47 @@ impl Progress {
             .expect("static progress template").progress_chars("=>-"),
         );
         bar.set_prefix(operation.to_owned());
-        bar.enable_steady_tick(Duration::from_millis(125));
-        Self(bar)
+        if PROGRESS.load(Ordering::Relaxed) {
+            if let Some(delay) = delay {
+                let weak = bar.downgrade();
+                std::thread::spawn(move || {
+                    std::thread::sleep(delay);
+                    let bars = BARS.lock().unwrap();
+                    if let Some(bar) = weak.upgrade().filter(|bar| !bar.is_finished()) {
+                        bars.add(bar.clone());
+                        bar.enable_steady_tick(Duration::from_millis(125));
+                        bar.force_draw();
+                    }
+                });
+            } else {
+                BARS.lock().unwrap().add(bar.clone());
+                bar.enable_steady_tick(Duration::from_millis(125));
+            }
+        }
+        Self(bar, Mutex::new(Instant::now()))
+    }
+
+    /// Keep formatting and rendering off the hot path of streaming reads.
+    pub fn streaming_message(&self, message: impl FnOnce() -> String) {
+        if !PROGRESS.load(Ordering::Relaxed) {
+            return;
+        }
+        let mut last = self.1.lock().unwrap();
+        if last.elapsed() >= Duration::from_millis(125) {
+            self.0.set_message(message());
+            *last = Instant::now();
+        }
     }
 }
 impl Drop for Progress {
     fn drop(&mut self) {
-        self.0.finish_and_clear();
+        if PROGRESS.load(Ordering::Relaxed) {
+            let bars = BARS.lock().unwrap();
+            self.0.finish_and_clear();
+            bars.remove(&self.0);
+        } else {
+            self.0.finish_and_clear();
+        }
     }
 }
 
@@ -165,6 +221,23 @@ pub fn bytes(value: u64) -> String {
     format!("{number:.2} {}", UNITS[unit])
 }
 
+/// Format byte progress with a denominator only when the full amount is known.
+pub fn byte_progress(done: u64, total: Option<u64>) -> String {
+    match total {
+        Some(total) => format!("{} / {}", bytes(done), bytes(total)),
+        None => bytes(done),
+    }
+}
+
+pub fn byte_rate(done: u64, elapsed: Duration) -> String {
+    let rate = if elapsed.is_zero() {
+        0
+    } else {
+        (done as f64 / elapsed.as_secs_f64()) as u64
+    };
+    format!("{}/s", bytes(rate))
+}
+
 pub fn stats(repository: &std::path::Path, summary: &crate::output::report::Summary) -> String {
     use std::fmt::Write;
     let mismatches = summary
@@ -232,6 +305,7 @@ mod formatting_tests {
             (512, "512 B"),
             (1024, "1.00 KiB"),
             (1048576, "1.00 MiB"),
+            (1073741824, "1.00 GiB"),
             (u64::MAX, "16.00 EiB"),
         ] {
             assert_eq!(super::bytes(value), expected);

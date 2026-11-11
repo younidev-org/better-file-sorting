@@ -123,10 +123,11 @@ pub fn run(root: &Path, full: bool, cancelled: &AtomicBool) -> Result<Report> {
         "full verification requires a standard repository; sealed payloads are never unlocked automatically"
     );
     ensure!(!cancelled.load(Ordering::Relaxed), "interrupted");
-    let metadata_progress =
-        crate::app::presentation::Progress::new(None, "Validating repository metadata");
+    use crate::app::presentation::{Progress, byte_progress};
+
+    let metadata_progress = Progress::new(None, "Validating repository metadata");
     let mut report = Report::default();
-    for name in ["", "objects", "manifests", "views", "reports", ".staging"] {
+    for name in ["", "objects", "views", "reports", ".staging"] {
         if let Err(error) = private_directory(&repo.root().join(name)) {
             report.failures.push(format!("{name}: {error}"));
         }
@@ -188,11 +189,21 @@ pub fn run(root: &Path, full: bool, cancelled: &AtomicBool) -> Result<Report> {
         objects.entry(hash.as_str()).or_insert(*size);
     }
     report.objects = objects.len();
-    drop(metadata_progress);
-    let progress = crate::app::presentation::Progress::new(
-        Some(objects.len() as u64),
-        "Verifying repository objects",
-    );
+    let mut metadata_progress = Some(metadata_progress);
+    let full_progress = full.then(|| {
+        drop(metadata_progress.take());
+        Progress::new(Some(objects.len() as u64), "Verifying repository objects")
+    });
+    let total = full_progress.as_ref().and_then(|_| {
+        objects
+            .values()
+            .try_fold(0u64, |total, size| total.checked_add(*size))
+    });
+    let mut read = 0u64;
+    let message = |read| format!("{} read", byte_progress(read, total));
+    if let Some(progress) = &full_progress {
+        progress.0.set_message(message(read));
+    }
     for (hash, size) in objects {
         ensure!(!cancelled.load(Ordering::Relaxed), "interrupted");
         let path = repo.object(hash)?;
@@ -203,9 +214,15 @@ pub fn run(root: &Path, full: bool, cancelled: &AtomicBool) -> Result<Report> {
                 fs::metadata(&path)?.len() == size,
                 "manifest/object size mismatch"
             );
-            if full {
-                let actual =
-                    crate::ingest::nested::hash_file(&mut fs::File::open(&path)?, cancelled)?;
+            if let Some(progress) = &full_progress {
+                let actual = crate::ingest::nested::hash_file_with_progress(
+                    &mut fs::File::open(&path)?,
+                    cancelled,
+                    |count| {
+                        read = read.saturating_add(count);
+                        progress.streaming_message(|| message(read));
+                    },
+                )?;
                 ensure!(actual == hash, "object checksum mismatch");
             }
             Ok(())
@@ -224,10 +241,17 @@ pub fn run(root: &Path, full: bool, cancelled: &AtomicBool) -> Result<Report> {
                 report.failures.push(format!("{hash}: {error}"));
             }
         }
-        progress.0.inc(1);
+        if let Some(progress) = &full_progress {
+            progress.0.inc(1);
+            progress.0.set_message(message(read));
+        }
     }
-    progress.0.finish_and_clear();
     ensure!(!cancelled.load(Ordering::Relaxed), "interrupted");
+    if let Some(progress) = &full_progress {
+        progress.0.force_draw();
+    }
+    drop(full_progress);
+    let _views_progress = full.then(|| Progress::new(None, "Validating repository views"));
     if let Err(error) = views(&repo, &identities, &mut report, cancelled) {
         report.failures.push(format!("views: {error}"));
     }

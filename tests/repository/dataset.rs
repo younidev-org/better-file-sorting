@@ -53,12 +53,7 @@ fn hash_default_percentage_strata_and_report_are_reproducible() {
     assert_eq!(report.occurrences, 3);
     assert_eq!(report.unique_objects, 3);
     assert!(o.output.join("reports/dataset.json").is_file());
-    assert_eq!(
-        std::fs::read_dir(o.output.join("manifests"))
-            .unwrap()
-            .count(),
-        0
-    );
+    assert!(!o.output.join("manifests").exists());
     let json: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&report.report_paths[0]).unwrap()).unwrap();
     assert_eq!(json["algorithm_version"], "bfsort-dataset-v3");

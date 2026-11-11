@@ -190,6 +190,13 @@ impl Config {
 
     /// Merge CLI ingest overrides into file or default configuration.
     pub fn for_ingest(args: &Ingest) -> Result<Self> {
+        Self::for_ingest_cancellable(args, &std::sync::atomic::AtomicBool::new(false))
+    }
+
+    pub fn for_ingest_cancellable(
+        args: &Ingest,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<Self> {
         let mut c = Self::load(args.config.as_deref())?;
         c.filters = args.selection.resolve(c.filters)?;
         if args.compression_level.is_some() {
@@ -252,7 +259,9 @@ impl Config {
         if c.inputs.is_empty()
             && let Some(download) = &c.download
         {
-            for input in crate::collection::acquisition::completed_inputs(download)? {
+            for input in
+                crate::collection::acquisition::completed_inputs_cancellable(download, cancelled)?
+            {
                 c.remote_inputs
                     .insert(input.path.clone(), input.receipt.candidate);
                 c.inputs.push(input.path);

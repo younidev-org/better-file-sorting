@@ -4,7 +4,6 @@ use bfsort::{
     repository::{
         catalog::{self, Catalog},
         metadata::{self, Occurrence},
-        security,
         storage::Repository,
     },
     selection::Filters,
@@ -13,24 +12,22 @@ use std::{fs, os::unix::fs::PermissionsExt};
 fn row(index: usize) -> Occurrence {
     serde_json::from_value(serde_json::json!({"occurrence_id":metadata::digest(index.to_string().as_bytes()),"sha256":metadata::digest(b"abc"),"size":3,"file_type":"text","original_name":"a.TXT","original_entry_name":"a.TXT","original_stem":"a","original_extension":".TXT","source_archive":"source","source_path":format!("source{index}"),"entry_index":index,"encrypted":false,"ingest_date":"today","run_id":"run"})).unwrap()
 }
-fn legacy() -> (tempfile::TempDir, std::path::PathBuf) {
+fn fixture() -> (tempfile::TempDir, std::path::PathBuf) {
     let t = tempfile::tempdir().unwrap();
     let root = t.path().join("repo");
-    drop(Repository::open(&root, SecurityMode::Sealed).unwrap());
-    let mut f = fs::File::create(root.join("manifests/run.jsonl")).unwrap();
-    security::seal(&f, SecurityMode::Standard).unwrap();
-    metadata::append(&mut f, &row(0)).unwrap();
+    let repo = Repository::open(&root, SecurityMode::Sealed).unwrap();
+    repo.with_catalog(|catalog| catalog.insert(&row(0)))
+        .unwrap();
     (t, root)
 }
 fn rows(c: &Catalog) -> Vec<Occurrence> {
     c.select(&Filters::default(), false).unwrap()
 }
 #[test]
-fn read_legacy_is_memory_only_and_migration_is_private() {
-    let (_t, root) = legacy();
+fn new_repositories_have_private_catalogs() {
+    let (_t, root) = fixture();
     assert_eq!(rows(&catalog::read(&root).unwrap()).len(), 1);
-    assert!(!catalog::exists(&root).unwrap());
-    drop(catalog::write(&root).unwrap());
+    assert!(catalog::exists(&root).unwrap());
     assert_eq!(
         fs::metadata(root.join(catalog::FILE_NAME))
             .unwrap()
@@ -43,7 +40,7 @@ fn read_legacy_is_memory_only_and_migration_is_private() {
 }
 #[test]
 fn transaction_conflict_rolls_back_and_sql_selection_matches_predicate() {
-    let (_t, root) = legacy();
+    let (_t, root) = fixture();
     let mut c = catalog::write(&root).unwrap();
     let mut conflict = row(0);
     conflict.size = 8;
@@ -66,7 +63,7 @@ fn transaction_conflict_rolls_back_and_sql_selection_matches_predicate() {
 }
 #[test]
 fn versions_and_permissions_fail_closed() {
-    let (_t, root) = legacy();
+    let (_t, root) = fixture();
     drop(catalog::write(&root).unwrap());
     let p = root.join(catalog::FILE_NAME);
     let connection = rusqlite::Connection::open(&p).unwrap();
@@ -78,25 +75,19 @@ fn versions_and_permissions_fail_closed() {
 }
 
 #[test]
-fn failed_migration_and_unsafe_sidecar_leave_no_catalog() {
-    let (_t, root) = legacy();
-    let path = root.join("manifests/run.jsonl");
-    fs::write(&path, b"{bad json}\n").unwrap();
-    assert!(catalog::write(&root).is_err());
-    assert!(!root.join(catalog::FILE_NAME).exists());
-    fs::write(
-        &path,
-        format!("{}\n", serde_json::to_string(&row(0)).unwrap()),
-    )
-    .unwrap();
+fn unsafe_sidecar_blocks_catalog_access() {
+    let (_t, root) = fixture();
+    let database = root.join(catalog::FILE_NAME);
     let sidecar = root.join(format!("{}-journal", catalog::FILE_NAME));
-    std::os::unix::fs::symlink(&path, &sidecar).unwrap();
+    std::os::unix::fs::symlink(&database, &sidecar).unwrap();
     assert!(catalog::read(&root).is_err());
-    assert!(!root.join(catalog::FILE_NAME).exists());
+    assert!(catalog::write(&root).is_err());
+    assert!(database.is_file());
 }
+
 #[test]
 fn deferred_ancestry_and_tombstone_guard_are_atomic() {
-    let (_t, root) = legacy();
+    let (_t, root) = fixture();
     let mut catalog = catalog::write(&root).unwrap();
     let parent = row(1);
     let mut child = row(2);
@@ -126,7 +117,7 @@ fn deferred_ancestry_and_tombstone_guard_are_atomic() {
 }
 #[test]
 fn index_record_corruption_and_numeric_overflow_fail_closed() {
-    let (_t, root) = legacy();
+    let (_t, root) = fixture();
     let mut catalog = catalog::write(&root).unwrap();
     let mut huge = row(1);
     huge.size = u64::MAX;
@@ -146,10 +137,9 @@ fn rows_result(c: &Catalog) -> anyhow::Result<Vec<Occurrence>> {
     c.select(&Filters::default(), true)
 }
 #[test]
-fn persistent_read_is_read_only_and_database_wins_over_legacy_edits() {
-    let (_t, root) = legacy();
+fn catalog_read_is_read_only() {
+    let (_t, root) = fixture();
     drop(catalog::write(&root).unwrap());
-    fs::write(root.join("manifests/run.jsonl"), b"invalid\n").unwrap();
     let mut catalog = catalog::read(&root).unwrap();
     assert_eq!(rows(&catalog).len(), 1);
     assert!(catalog.insert(&row(1)).is_err());
@@ -159,7 +149,7 @@ fn persistent_read_is_read_only_and_database_wins_over_legacy_edits() {
 #[test]
 fn all_filter_columns_match_shared_predicate_and_classification_rollback() {
     use bfsort::detection::{classifier::Format, mismatch::Status};
-    let (_t, root) = legacy();
+    let (_t, root) = fixture();
     let mut catalog = catalog::write(&root).unwrap();
     let mut second = row(1);
     second.original_extension = "pdf".into();
@@ -238,7 +228,7 @@ fn all_filter_columns_match_shared_predicate_and_classification_rollback() {
 #[test]
 fn same_identity_replay_preserves_provenance_and_views_pin_removed_hashes() {
     use bfsort::organization::rules::Planned;
-    let (_t, root) = legacy();
+    let (_t, root) = fixture();
     let mut catalog = catalog::write(&root).unwrap();
     let original = row(0);
     let mut replay = original.clone();
@@ -264,10 +254,9 @@ fn same_identity_replay_preserves_provenance_and_views_pin_removed_hashes() {
 }
 
 #[test]
-fn interrupted_and_cancelled_operations_migrate_and_round_trip() {
-    let (_t, root) = legacy();
-    security::private_dir(&root.join("operations")).unwrap();
-    security::private_dir(&root.join("operations/history")).unwrap();
+fn interrupted_and_cancelled_operations_round_trip() {
+    let (_t, root) = fixture();
+    let mut catalog = catalog::write(&root).unwrap();
     for state in ["interrupted", "cancelled"] {
         let record = bfsort::operations::Record {
             schema_version: 1,
@@ -286,13 +275,10 @@ fn interrupted_and_cancelled_operations_migrate_and_round_trip() {
             finished_at: Some("2026-11-05T00:01:00Z".into()),
             exit_code: Some(130),
         };
-        let path = root
-            .join("operations/history")
-            .join(format!("{}.json", record.id));
-        fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
-        security::seal(&fs::File::open(path).unwrap(), SecurityMode::Standard).unwrap();
+        catalog
+            .put_operation(&record.id, &serde_json::to_string(&record).unwrap())
+            .unwrap();
     }
-    let mut catalog = catalog::write(&root).unwrap();
     let records = catalog.operations().unwrap();
     assert_eq!(records.len(), 2);
     for text in records {

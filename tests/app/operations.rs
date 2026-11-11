@@ -229,7 +229,7 @@ fn repository_history_uses_catalog_authority_and_collection_stays_json() {
 }
 
 #[test]
-fn legacy_status_is_read_only_and_first_mutation_migrates_history() {
+fn repository_status_does_not_fall_back_when_catalog_is_missing() {
     let temp = tempfile::tempdir().unwrap();
     let collection = temp.path().join("collection");
     let mut guard = Guard::start(&collection, "download", &["download".into()]).unwrap();
@@ -246,16 +246,12 @@ fn legacy_status_is_read_only_and_first_mutation_migrates_history() {
         &old,
     )
     .unwrap();
-    assert!(!catalog::exists(&root).unwrap());
-    assert_eq!(operations::status(&root).unwrap()[0].id, old.id);
-    assert!(!catalog::exists(&root).unwrap());
+    assert!(operations::status(&root).unwrap().is_empty());
+    std::fs::remove_file(root.join(catalog::FILE_NAME)).unwrap();
+    assert!(operations::status(&root).is_err());
     let args = vec!["reclassify".into(), root.to_str().unwrap().into()];
-    let mut guard = Guard::start(&root, "reclassify", &args).unwrap();
-    guard.finish(0).unwrap();
-    assert!(catalog::exists(&root).unwrap());
-    let rows = operations::status(&root).unwrap();
-    assert_eq!(rows.len(), 2);
-    assert!(rows.iter().any(|r| r.id == old.id));
+    assert!(Guard::start(&root, "reclassify", &args).is_err());
+    assert!(!catalog::exists(&root).unwrap());
 }
 
 #[test]

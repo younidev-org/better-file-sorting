@@ -101,26 +101,10 @@ fn download_defaults_do_not_impose_transfer_caps() {
 }
 
 #[test]
-fn inventory_read_prefers_json_and_falls_back_only_for_default_filename() {
+fn default_inventory_uses_json() {
     use bfsort::collection::acquisition::DownloadConfig;
-    let temp = tempfile::tempdir().unwrap();
-    let json = temp.path().join("inventory.json");
-    let legacy = temp.path().join("inventory.jsonl");
-    let mut config = DownloadConfig {
-        inventory: json.clone(),
-        ..Default::default()
-    };
     assert_eq!(
         DownloadConfig::default().inventory.file_name().unwrap(),
         "inventory.json"
     );
-    assert_eq!(config.inventory_for_read().unwrap(), json);
-    std::fs::write(&legacy, b"legacy").unwrap();
-    assert_eq!(config.inventory_for_read().unwrap(), legacy);
-    std::fs::write(&json, b"new").unwrap();
-    assert_eq!(config.inventory_for_read().unwrap(), json);
-    config.inventory = temp.path().join("custom.json");
-    assert_eq!(config.inventory_for_read().unwrap(), config.inventory);
-    config.inventory = legacy.clone();
-    assert_eq!(config.inventory_for_read().unwrap(), legacy);
 }

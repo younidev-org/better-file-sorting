@@ -31,6 +31,16 @@ pub fn extract_file(
     limits: &Limits,
     cancelled: &AtomicBool,
 ) -> Result<Extracted> {
+    extract_file_with_progress(path, staging, limits, cancelled, &|_| {})
+}
+
+pub(crate) fn extract_file_with_progress(
+    path: &Path,
+    staging: &Path,
+    limits: &Limits,
+    cancelled: &AtomicBool,
+    on_read: &impl Fn(u64),
+) -> Result<Extracted> {
     crate::ingest::discovery::check_path(path)?;
     ensure!(
         std::fs::symlink_metadata(path)?.is_file(),
@@ -63,6 +73,7 @@ pub fn extract_file(
         if count == 0 {
             break;
         }
+        on_read(count as u64);
         size = size
             .checked_add(count as u64)
             .ok_or_else(|| anyhow::anyhow!("size overflow"))?;
@@ -125,7 +136,32 @@ pub fn extract_budgeted(
     limits: &Limits,
     total: &mut u64,
     cancelled: &AtomicBool,
+    tree: Option<&mut crate::ingest::nested::Budget>,
+) -> Result<Extracted> {
+    extract_with_progress(
+        archive,
+        index,
+        passwords,
+        staging,
+        limits,
+        total,
+        cancelled,
+        tree,
+        &|_| {},
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn extract_with_progress(
+    archive: &mut zip::ZipArchive<File>,
+    index: usize,
+    passwords: &[String],
+    staging: &Path,
+    limits: &Limits,
+    total: &mut u64,
+    cancelled: &AtomicBool,
     mut tree: Option<&mut crate::ingest::nested::Budget>,
+    on_read: &impl Fn(u64),
 ) -> Result<Extracted> {
     let entry = archive.by_index_data(index)?;
     validate_name(&entry.name()?)?;
@@ -201,6 +237,7 @@ pub fn extract_budgeted(
             if count == 0 {
                 break;
             }
+            on_read(count as u64);
             size = size
                 .checked_add(count as u64)
                 .ok_or_else(|| anyhow::anyhow!("size overflow"))?;

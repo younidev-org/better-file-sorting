@@ -229,7 +229,7 @@ fn ingestion_reports_stats_rules_and_independent_exports() {
 }
 
 #[test]
-fn legacy_defaults_and_explicit_analysis() {
+fn unevaluated_catalog_records_can_be_reclassified() {
     let t = tempfile::tempdir().unwrap();
     let input = t.path().join("input.zip");
     let repo = t.path().join("repo");
@@ -246,30 +246,14 @@ fn legacy_defaults_and_explicit_analysis() {
         .status
         .success()
     );
-    // Build an explicit legacy fixture; current ingestion writes only SQLite metadata.
-    let mut record =
-        serde_json::to_value(bfsort::repository::metadata::load(&repo).unwrap().remove(0)).unwrap();
-    record.as_object_mut().unwrap().remove("detection");
-    record.as_object_mut().unwrap().remove("mismatch");
-    let path = repo.join("manifests/legacy.jsonl");
-    std::fs::write(&path, format!("{record}\n")).unwrap();
-    bfsort::repository::security::seal(
-        &std::fs::File::open(&path).unwrap(),
-        bfsort::app::config::SecurityMode::Standard,
-    )
-    .unwrap();
-    let catalog = bfsort::repository::catalog::read(&repo).unwrap();
-    for generation in catalog.views().unwrap() {
-        let path = repo.join("views").join(&generation).join("layout.jsonl");
-        let mut file = std::fs::File::create(&path).unwrap();
-        bfsort::repository::security::seal(&file, bfsort::app::config::SecurityMode::Standard)
-            .unwrap();
-        for row in catalog.view_plan(&generation).unwrap() {
-            bfsort::repository::metadata::append(&mut file, &row).unwrap();
-        }
-    }
-    drop(catalog);
-    std::fs::remove_file(repo.join(bfsort::repository::catalog::FILE_NAME)).unwrap();
+    let mut record = bfsort::repository::metadata::load(&repo).unwrap().remove(0);
+    record.detection = Default::default();
+    record.mismatch = Default::default();
+    let repository = bfsort::repository::storage::Repository::existing(&repo).unwrap();
+    repository
+        .with_catalog(|catalog| catalog.update_classifications(&[record]))
+        .unwrap();
+    drop(repository);
     let records = bfsort::repository::metadata::load(&repo).unwrap();
     assert_eq!(
         records[0].detection.detected_format,

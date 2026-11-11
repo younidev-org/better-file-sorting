@@ -48,21 +48,24 @@ impl Repository {
         lock.try_lock()
             .map_err(|_| anyhow::anyhow!("repository is in use by another process"))?;
         let mode_path = root.join("security.json");
-        if mode_path.exists() {
+        if mode_path.try_exists()? {
             security::validate_file(&mode_path, SecurityMode::Standard)?;
             let stored: SecurityMode = serde_json::from_slice(&fs::read(&mode_path)?)?;
             ensure!(
                 stored == mode,
                 "repository security mode cannot be changed automatically"
             );
+            super::catalog::require(root)?;
         } else {
+            super::catalog::create(root)?;
             let mut file = tempfile::NamedTempFile::new_in(root)?;
             serde_json::to_writer(&mut file, &mode)?;
             file.flush()?;
             file.as_file().sync_all()?;
             file.persist_noclobber(&mode_path)?;
+            File::open(root)?.sync_all()?;
         }
-        for name in ["objects", "manifests", "views", "reports", ".staging"] {
+        for name in ["objects", "views", "reports", ".staging"] {
             security::private_dir(&root.join(name))?;
         }
         // The exclusive repository lock proves no other writer owns these staging directories.
@@ -98,7 +101,7 @@ impl Repository {
         let mode_path = root.join("security.json");
         match fs::symlink_metadata(&mode_path) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => anyhow::bail!(
-                "security.json is missing; collection directories store downloads, while repository commands require ingested objects and manifests. Ingest accessible inputs with bfsort ingest <INPUT> --extract --output <REPOSITORY>, then specify that repository explicitly. Sealed downloads require explicit authorized access first"
+                "security.json is missing; collection directories store downloads, while repository commands require ingested objects and a SQLite catalog. Ingest accessible inputs with bfsort ingest <INPUT> --extract --output <REPOSITORY>, then specify that repository explicitly. Sealed downloads require explicit authorized access first"
             ),
             Err(error) => return Err(error.into()),
             Ok(_) => {}
@@ -110,7 +113,8 @@ impl Repository {
         let lock = File::open(lock_path)?;
         lock.try_lock()
             .map_err(|_| anyhow::anyhow!("repository is in use by another process"))?;
-        for name in ["objects", "manifests", "views", "reports", ".staging"] {
+        super::catalog::require(root)?;
+        for name in ["objects", "views", "reports", ".staging"] {
             crate::ingest::discovery::check_path(&root.join(name))?;
             ensure!(root.join(name).is_dir(), "incomplete repository");
         }

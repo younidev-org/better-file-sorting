@@ -53,11 +53,8 @@ fn removal_requires_selector_and_confirmation() {
 }
 
 #[test]
-fn retained_manifest_view_and_duplicate_occurrences_pin_objects() {
-    use bfsort::{
-        organization::{organizer, rules::Rules},
-        repository::security,
-    };
+fn retained_catalog_view_and_duplicate_occurrences_pin_objects() {
+    use bfsort::organization::{organizer, rules::Rules};
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("repo");
     let repo = Repository::open(&root, SecurityMode::Standard).unwrap();
@@ -66,11 +63,9 @@ fn retained_manifest_view_and_duplicate_occurrences_pin_objects() {
     let mut file = tempfile::NamedTempFile::new_in(repo.staging()).unwrap();
     file.write_all(b"abc").unwrap();
     repo.commit(file, &hash, 3).unwrap();
-    let mut file = std::fs::File::create(root.join("manifests/run.jsonl")).unwrap();
-    security::seal(&file, SecurityMode::Standard).unwrap();
     for (index, extension) in ["txt", "pdf"].iter().enumerate() {
         let row:metadata::Occurrence=serde_json::from_value(serde_json::json!({"occurrence_id":metadata::digest(index.to_string().as_bytes()),"sha256":hash,"size":3,"file_type":"text","original_name":format!("a.{extension}"),"original_entry_name":format!("a.{extension}"),"original_stem":"a","original_extension":extension,"source_archive":"source","source_path":"source","entry_index":index,"encrypted":false,"ingest_date":"today","run_id":"run"})).unwrap();
-        metadata::append(&mut file, &row).unwrap();
+        metadata::store(&repo, &row).unwrap();
     }
     let rules = Rules::parse("version=1\n[organization]\nview_mode='manifest'").unwrap();
     let rows = metadata::load(&root).unwrap();
@@ -186,4 +181,27 @@ fn corrupt_known_receipt_stops_prune_and_full_verification() {
         bfsort::repository::verify::run(&root, true, &std::sync::atomic::AtomicBool::new(false))
             .unwrap();
     assert!(report.failures.iter().any(|e| e.contains("checksum")));
+}
+
+#[test]
+fn obsolete_view_metadata_blocks_reclamation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("repo");
+    let repo = Repository::open(&root, SecurityMode::Standard).unwrap();
+    let hash = metadata::digest(b"abc");
+    let object = repo.object(&hash).unwrap();
+    let mut file = tempfile::NamedTempFile::new_in(repo.staging()).unwrap();
+    file.write_all(b"abc").unwrap();
+    repo.commit(file, &hash, 3).unwrap();
+    drop(repo);
+    let view = root.join("views/view-obsolete");
+    bfsort::repository::security::private_dir(&view).unwrap();
+    std::fs::write(
+        view.join("layout.jsonl"),
+        format!("{{\"sha256\":\"{hash}\"}}\n"),
+    )
+    .unwrap();
+
+    assert!(cleanup::prune(&root, false, true).is_err());
+    assert!(object.is_file());
 }

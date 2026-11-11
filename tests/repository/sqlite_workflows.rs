@@ -1,4 +1,4 @@
-//! End-to-end checks of catalog authority, interchange and legacy compatibility.
+//! End-to-end checks of SQLite catalog authority and interchange.
 #![cfg(unix)]
 use bfsort::{
     app::config::SecurityMode,
@@ -80,16 +80,19 @@ fn synthetic(index: usize) -> Occurrence {
         "entry_index":index,"encrypted":false,"ingest_date":"2026-11-05","run_id":"legacy"
     })).unwrap()
 }
-fn legacy(root: &Path) {
+fn fixture(root: &Path, rows: &[Occurrence]) {
     let repo = Repository::open(root, SecurityMode::Standard).unwrap();
     let mut file = tempfile::NamedTempFile::new_in(repo.staging()).unwrap();
     file.write_all(b"abc").unwrap();
     repo.commit(file, &metadata::digest(b"abc"), 3).unwrap();
-    let mut journal = tempfile::NamedTempFile::new_in(repo.root().join("manifests")).unwrap();
-    metadata::append(journal.as_file_mut(), &synthetic(0)).unwrap();
-    journal
-        .persist(repo.root().join("manifests/legacy.jsonl"))
+    metadata::store_many(&repo, rows).unwrap();
+}
+
+fn snapshot(root: &Path, rows: &[Occurrence]) -> PathBuf {
+    let repo = Repository::open(root, SecurityMode::Standard).unwrap();
+    repo.with_catalog(|catalog| catalog.insert_many(rows))
         .unwrap();
+    root.join("metadata.sqlite3")
 }
 
 #[test]
@@ -122,15 +125,8 @@ fn ingest_catalog_is_private_metadata_and_ignores_stale_jsonl() {
                 .is_file()
         );
     }
-    for entry in fs::read_dir(root.join("manifests")).unwrap() {
-        let path = entry.unwrap().path();
-        if path
-            .extension()
-            .is_some_and(|extension| extension == "jsonl")
-        {
-            fs::remove_file(path).unwrap();
-        }
-    }
+    assert!(!root.join("manifests").exists());
+    fs::create_dir(root.join("manifests")).unwrap();
     private_write(
         &root.join("manifests/stale.jsonl"),
         b"malformed stale export\n",
@@ -174,23 +170,10 @@ fn ingest_catalog_is_private_metadata_and_ignores_stale_jsonl() {
 }
 
 #[test]
-fn legacy_import_remains_available_without_jsonl_export() {
+fn metadata_import_reads_a_sqlite_catalog_without_copying_payloads() {
     let tmp = tempfile::tempdir().unwrap();
     let root = ingest(tmp.path());
-    let exported = tmp.path().join("exchange.jsonl");
-    assert!(
-        !cli(&["metadata", "export", text(&root), "-o", text(&exported)])
-            .status
-            .success()
-    );
-    assert!(!exported.exists());
-    // A legacy input fixture is still accepted for one-time migration.
-    let mut bytes = Vec::new();
-    for row in metadata::load(&root).unwrap() {
-        bytes.extend(serde_json::to_vec(&row).unwrap());
-        bytes.push(b'\n');
-    }
-    private_write(&exported, &bytes);
+    let exported = root.join("metadata.sqlite3");
     assert!(
         tree_files(&root)
             .keys()
@@ -227,29 +210,28 @@ fn legacy_import_remains_available_without_jsonl_export() {
 }
 
 #[test]
-fn legacy_read_and_preview_do_not_create_catalog() {
+fn missing_catalog_fails_closed_even_with_a_manifest() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("legacy");
-    legacy(&root);
-    assert!(!root.join("metadata.sqlite3").exists());
+    fixture(&root, &[synthetic(0)]);
+    fs::create_dir(root.join("manifests")).unwrap();
+    private_write(
+        &root.join("manifests/legacy.jsonl"),
+        format!("{}\n", serde_json::to_string(&synthetic(0)).unwrap()).as_bytes(),
+    );
+    fs::remove_file(root.join("metadata.sqlite3")).unwrap();
     let before = tree_files(&root);
-    assert_eq!(count(&root, &[]), 1);
-    success(&[
-        "sample",
-        text(&root),
-        "--count",
-        "1",
-        "-o",
-        text(&tmp.path().join("preview")),
-        "--dry-run",
-        "--json",
-    ]);
-    assert!(!root.join("metadata.sqlite3").exists());
-    assert!(!tmp.path().join("preview").exists());
+    assert!(
+        !cli(&["query", text(&root), "--count", "--json"])
+            .status
+            .success()
+    );
+    assert!(
+        !cli(&["metadata", "migrate", text(&root), "--json"])
+            .status
+            .success()
+    );
     assert_eq!(tree_files(&root), before);
-    success(&["metadata", "migrate", text(&root), "--json"]);
-    assert!(root.join("metadata.sqlite3").exists());
-    assert_eq!(count(&root, &[]), 1);
 }
 
 #[test]
@@ -267,20 +249,19 @@ fn unsupported_schema_fails_closed() {
 }
 
 #[test]
-fn malformed_import_does_not_publish_prefix() {
+fn corrupt_sqlite_import_does_not_publish_prefix() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("repo");
-    legacy(&root);
-    // Migrate the existing row before checking transactional import rollback.
-    let initial = tmp.path().join("initial.jsonl");
-    let mut bytes = serde_json::to_vec(&synthetic(0)).unwrap();
-    bytes.push(b'\n');
-    private_write(&initial, &bytes);
-    success(&["metadata", "import", text(&root), text(&initial), "--json"]);
-    let invalid = tmp.path().join("invalid.jsonl");
-    let mut bytes = serde_json::to_vec(&synthetic(1)).unwrap();
-    bytes.extend_from_slice(b"\n{malformed}\n");
-    private_write(&invalid, &bytes);
+    fixture(&root, &[synthetic(0)]);
+    let invalid = snapshot(&tmp.path().join("invalid"), &[synthetic(1), synthetic(2)]);
+    let connection = rusqlite::Connection::open(&invalid).unwrap();
+    connection
+        .execute(
+            "UPDATE occurrences SET normalized_extension='wrong' WHERE entry_index=2",
+            [],
+        )
+        .unwrap();
+    drop(connection);
     assert!(
         !cli(&["metadata", "import", text(&root), text(&invalid), "--json"])
             .status
@@ -319,30 +300,63 @@ fn tombstones_reclassification_and_interchange_agree() {
 fn import_rejects_missing_objects_and_conflicting_ids() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("repo");
-    legacy(&root);
-    let input = tmp.path().join("conflict.jsonl");
+    fixture(&root, &[synthetic(0)]);
     let mut conflict = synthetic(0);
     conflict.source_path = "conflicting provenance".to_owned();
-    let mut bytes = serde_json::to_vec(&conflict).unwrap();
-    bytes.push(b'\n');
-    private_write(&input, &bytes);
+    let input = snapshot(&tmp.path().join("conflict"), &[conflict]);
     assert!(
         !cli(&["metadata", "import", text(&root), text(&input), "--json"])
             .status
             .success()
     );
     assert_eq!(metadata::load(&root).unwrap()[0].source_path, "legacy");
-    let mut missing = synthetic(1);
+
+    let mut missing = synthetic(2);
     missing.sha256 = metadata::digest(b"absent bytes");
-    let mut bytes = serde_json::to_vec(&missing).unwrap();
-    bytes.push(b'\n');
-    private_write(&input, &bytes);
+    let input = snapshot(&tmp.path().join("missing"), &[synthetic(1), missing]);
     assert!(
         !cli(&["metadata", "import", text(&root), text(&input), "--json"])
             .status
             .success()
     );
     assert_eq!(count(&root, &[]), 1);
+}
+
+#[test]
+fn metadata_migrate_upgrades_older_sqlite_catalogs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("repo");
+    fixture(&root, &[synthetic(0)]);
+    let path = root.join("metadata.sqlite3");
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection.execute_batch("ALTER TABLE occurrences DROP COLUMN structural; DROP TABLE operation_inputs; PRAGMA user_version=1;").unwrap();
+    drop(connection);
+    let result = success(&["metadata", "migrate", text(&root), "--json"]);
+    assert_eq!(result["occurrences"], 1);
+    let connection = rusqlite::Connection::open(path).unwrap();
+    let version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 2);
+}
+
+#[test]
+fn import_does_not_resurrect_removed_rows() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("repo");
+    fixture(&root, &[]);
+    let input = snapshot(&tmp.path().join("source"), &[synthetic(0), synthetic(1)]);
+    let source = Repository::existing(input.parent().unwrap()).unwrap();
+    source
+        .with_catalog(|catalog| catalog.remove(&[synthetic(1).occurrence_id].into()))
+        .unwrap();
+    drop(source);
+    let report = success(&["metadata", "import", text(&root), text(&input), "--json"]);
+    assert_eq!(report["occurrences"], 1);
+    assert_eq!(
+        metadata::load(&root).unwrap()[0].occurrence_id,
+        synthetic(0).occurrence_id
+    );
 }
 
 fn tree_files(root: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {

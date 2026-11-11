@@ -213,7 +213,7 @@ fn machine_reports_disable_both_stream_colors() {
             .output()
             .unwrap()
     };
-    for format in ["json", "jsonl", "csv"] {
+    for format in ["json", "csv"] {
         let out = run(&[
             "report",
             "mismatches",

@@ -32,7 +32,7 @@ use std::{
     path::Path,
     sync::{
         Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Instant,
 };
@@ -439,8 +439,25 @@ fn ingest_repository(config: &Config, cancelled: &AtomicBool, rules: &Rules) -> 
         first_failure: None,
         failure_details: vec![],
     });
-    let progress =
-        crate::app::presentation::Progress::new(Some(paths.len() as u64), "Organizing inputs");
+    use crate::app::presentation::{Progress, bytes};
+
+    let (phase, byte_label) = match config.input_mode {
+        InputMode::Archives => ("Extracting archives", "expanded"),
+        InputMode::Files => ("Reading input files", "read"),
+    };
+    let progress = Progress::new(Some(paths.len() as u64), phase);
+    let processed = AtomicU64::new(0);
+    let message = |failures| {
+        format!(
+            "{} {byte_label} · {failures} failed",
+            bytes(processed.load(Ordering::Relaxed))
+        )
+    };
+    let on_read = |count| {
+        processed.fetch_add(count, Ordering::Relaxed);
+        progress.streaming_message(|| message(journal.lock().map_or(0, |j| j.failures)));
+    };
+    progress.0.set_message(message(0));
     let started = Instant::now();
     let nested_cache = crate::ingest::nested::Cache::with_records(existing.values());
     let nested_report = Mutex::new(crate::ingest::nested::TreeReport {
@@ -471,13 +488,14 @@ fn ingest_repository(config: &Config, cancelled: &AtomicBool, rules: &Rules) -> 
             let mut pending_records = Vec::with_capacity(128);
             let mut work = || -> Result<()> {
                 if config.archive.nested_extraction {
-                    let result = crate::ingest::nested::ingest_root(
+                    let result = crate::ingest::nested::ingest_root_with_progress(
                         &repo,
                         path,
                         config,
                         cancelled,
                         &nested_cache,
                         &run_id,
+                        &on_read,
                     )?;
                     let mut journal = journal
                         .lock()
@@ -561,7 +579,7 @@ fn ingest_repository(config: &Config, cancelled: &AtomicBool, rules: &Rules) -> 
                         }
                         let encrypted = data.encrypted();
                         let original = data.name()?.into_owned();
-                        let result = extraction::extract(
+                        let result = extraction::extract_with_progress(
                             zip,
                             index,
                             &passwords,
@@ -569,6 +587,8 @@ fn ingest_repository(config: &Config, cancelled: &AtomicBool, rules: &Rules) -> 
                             &config.limits,
                             &mut total,
                             cancelled,
+                            None,
+                            &on_read,
                         );
                         (encrypted, original, result)
                     } else {
@@ -578,11 +598,12 @@ fn ingest_repository(config: &Config, cancelled: &AtomicBool, rules: &Rules) -> 
                                 .unwrap_or_default()
                                 .to_string_lossy()
                                 .into_owned(),
-                            extraction::extract_file(
+                            extraction::extract_file_with_progress(
                                 path,
                                 marker.path(),
                                 &config.limits,
                                 cancelled,
+                                &on_read,
                             ),
                         )
                     };
@@ -674,12 +695,6 @@ fn ingest_repository(config: &Config, cancelled: &AtomicBool, rules: &Rules) -> 
                             completed_records.push(record);
                             journal.accepted += 1;
                             journal.bytes += item.size;
-                            progress.0.set_message(format!(
-                                "{} items; {} failed; {} processed",
-                                journal.accepted,
-                                journal.failures,
-                                crate::app::presentation::bytes(journal.bytes)
-                            ));
                         }
                         Err(error) => {
                             input_error = Some(error.to_string());
@@ -748,21 +763,18 @@ fn ingest_repository(config: &Config, cancelled: &AtomicBool, rules: &Rules) -> 
                 let journal = journal
                     .lock()
                     .map_err(|_| anyhow::anyhow!("journal lock poisoned"))?;
-                progress.0.set_message(format!(
-                    "{} items; {} failed; {} processed",
-                    journal.accepted,
-                    journal.failures,
-                    crate::app::presentation::bytes(journal.bytes)
-                ));
+                progress.0.set_message(message(journal.failures));
             }
             progress.0.inc(1);
             Ok(())
         })
     })?;
-    progress.0.finish_and_clear();
     let journal = journal
         .into_inner()
         .map_err(|_| anyhow::anyhow!("journal lock poisoned"))?;
+    progress.0.set_message(message(journal.failures));
+    progress.0.force_draw();
+    drop(progress);
     let records = metadata::load(repo.root())?;
     let plan = rules.plan(&records)?;
     crate::organization::organizer::organize(&repo, rules, &plan)?;

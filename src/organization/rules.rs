@@ -490,11 +490,7 @@ impl Rules {
             *counts.entry(&row.sha256).or_insert(0usize) += 1;
         }
         let mut seen = BTreeSet::new();
-        let mut paths = BTreeSet::from([
-            "layout.jsonl".to_string(),
-            "manifest.jsonl".to_string(),
-            "export.json".to_string(),
-        ]);
+        let mut paths = BTreeSet::from(["export.json".to_string()]);
         let mut directories = BTreeSet::new();
         let mut result = vec![];
         for row in sorted {

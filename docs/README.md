@@ -15,7 +15,7 @@ Choose a reference by task:
 | Resume interrupted processing | [Recovery guide](recovery.md) |
 | Query, verify, compare, copy or clean repositories | [Repository tools](repository-tools.md) |
 | Build reproducible sampled datasets | [Dataset guide](datasets.md) |
-| Migrate metadata to SQLite or import legacy JSONL | [SQLite metadata](sqlite.md) |
+| Upgrade or import SQLite metadata | [SQLite metadata](sqlite.md) |
 | Read the packaged release notes | [Release README](RELEASE_README.md) |
 | Inspect the benchmark output | [Benchmark results](benchmark-tmpfs.jsonl) |
 | Compare the partial disk benchmark | [Partial Btrfs benchmark](benchmark-btrfs-partial.jsonl) |

@@ -130,13 +130,20 @@ fn collect_reuses_refreshes_and_dry_run_never_fetches_payloads() {
     )
     .unwrap();
     let n = server.requests.lock().unwrap().len();
+    let download = run(dir.path(), &["download", "--dry-run", "--json"]);
+    assert!(!download.status.success());
+    assert_eq!(server.requests.lock().unwrap().len(), n);
+    std::fs::copy(
+        dir.path().join("collection/inventory.jsonl"),
+        dir.path().join("collection/inventory.json"),
+    )
+    .unwrap();
     let out = run(
         dir.path(),
         &["collect", "-o", "collection", "--dry-run", "--json"],
     );
     assert!(out.status.success());
     assert_eq!(server.requests.lock().unwrap().len(), n);
-    assert!(!dir.path().join("collection/inventory.json").exists());
     let download = run(dir.path(), &["download", "--dry-run", "--json"]);
     assert!(
         download.status.success(),
@@ -241,7 +248,7 @@ fn color_and_quiet_never_pollute_json_or_piped_auto() {
 fn obsolete_acquisition_state_is_rejected_without_deleting_it() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join("collection")).unwrap();
-    let path = dir.path().join("collection/inventory.jsonl");
+    let path = dir.path().join("collection/inventory.json");
     bfsort::collection::acquisition::save_json(
         &path,
         &serde_json::json!({"version":1,"candidates":[]}),

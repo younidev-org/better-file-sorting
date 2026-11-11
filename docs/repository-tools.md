@@ -12,7 +12,7 @@ bfsort query REPOSITORY --include-format pdf --count
 bfsort diff LEFT RIGHT
 ```
 
-`verify` checks stored structure, manifests, references, object sizes and permissions without repairs. `--full` additionally hashes referenced payloads and requires a standard repository. Sealed repositories support metadata verification only. Missing, corrupt and unsupported validation categories are reported; unsupported receipt schemas cannot establish integrity. A failed integrity check or an unavailable requested verification level returns failure.
+`verify` checks stored structure, the catalog, references, object sizes and permissions without repairs. `--full` additionally hashes referenced payloads and requires a standard repository. Sealed repositories support metadata verification only. Missing, corrupt and unsupported validation categories are reported; unsupported receipt schemas cannot establish integrity. A failed integrity check or an unavailable requested verification level returns failure.
 
 `query` uses indexed, parameterized SQL over effective occurrence metadata, including classification results, without reading payloads. Default results describe occurrences; `--count` distinguishes selected occurrence count from distinct content hashes. Results have deterministic ordering.
 
@@ -130,5 +130,5 @@ Dry-run writes neither tombstones nor deletion journals. No command automaticall
 unseals a payload or deletes sources. This is conservative storage reclamation,
 not secure erasure of file contents.
 
-See [SQLite metadata](sqlite.md) for catalog authority, explicit migration and
-legacy JSONL import. Existing include/exclude flags keep the same meaning.
+See [SQLite metadata](sqlite.md) for catalog authority, schema upgrades and
+SQLite import. Existing include/exclude flags keep the same meaning.

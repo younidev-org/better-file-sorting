@@ -221,19 +221,18 @@ selection semantics, recovery history, and cleanup safeguards. `prune --confirm`
 reclaims only canonical objects with no recognized retained reference; removing
 an occurrence does not automatically reclaim its payload.
 
-## SQLite metadata and legacy JSONL import
+## SQLite metadata
 
 ```sh
 bfsort metadata migrate ./repository
-bfsort metadata import ./repository ./records.jsonl
+bfsort metadata import ./repository ./source/metadata.sqlite3
 ```
 
-Legacy queries/previews do not create a catalog. The first metadata mutation, or
-explicit `metadata migrate`, atomically imports the existing records. Once present,
-`metadata.sqlite3` is authoritative. Import requires payload objects already in
-the destination; export contains only active effective metadata. See
-[SQLite metadata](sqlite.md) for backup, schema, privacy and recovery guarantees.
+Repository commands require `metadata.sqlite3`. Use `metadata migrate` to upgrade
+an older SQLite schema. Import reads active occurrences from a SQLite catalog
+and requires the referenced objects in the destination. See
+[SQLite metadata](sqlite.md) for backup, schema, privacy and recovery details.
 
 Sample by percentage with `sample REPOSITORY --percentage 10 --stratify ingest-date,family --seed 7 -o SAMPLE`. The default unit is unique content hashes; `--unit occurrence` samples source events. Merge, split and sample accept `--resume`. See [datasets](datasets.md).
 
-Analyze and reclassify accept shared selection flags. Ingest and export accept `--naming sample|original|detected`; see [exports](exports.md). JSONL exporting is removed; reports support table, JSON and CSV. Legacy metadata import remains available.
+Analyze and reclassify accept shared selection flags. Ingest and export accept `--naming sample|original|detected`; see [exports](exports.md). Reports support table, JSON and CSV.

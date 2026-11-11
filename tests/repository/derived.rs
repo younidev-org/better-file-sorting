@@ -11,8 +11,12 @@ use bfsort::{
 use std::{io::Write, sync::atomic::AtomicBool};
 
 fn source(path: &std::path::Path, mode: SecurityMode) {
+    source_with(path, mode, |_| {});
+}
+
+fn source_with(path: &std::path::Path, mode: SecurityMode, change: impl FnOnce(&mut [Occurrence])) {
     let repo = Repository::open(path, mode).unwrap();
-    let mut journal = tempfile::NamedTempFile::new_in(repo.root().join("manifests")).unwrap();
+    let mut records = Vec::new();
     for index in 0..3 {
         let mut file = tempfile::NamedTempFile::new_in(repo.staging()).unwrap();
         file.write_all(b"abc").unwrap();
@@ -23,11 +27,10 @@ fn source(path: &std::path::Path, mode: SecurityMode) {
             "original_stem": "a", "original_extension": "txt", "source_archive": "", "source_path": "a",
             "entry_index": index, "encrypted": false, "ingest_date": "2026-11-05", "run_id": "original"
         })).unwrap();
-        metadata::append(journal.as_file_mut(), &record).unwrap();
+        records.push(record);
     }
-    journal
-        .persist(repo.root().join("manifests/source.jsonl"))
-        .unwrap();
+    change(&mut records);
+    metadata::store_many(&repo, &records).unwrap();
 }
 
 #[test]
@@ -150,7 +153,7 @@ fn conflicting_occurrence_ids_fail_and_identical_records_deduplicate() {
     let right = dir.path().join("right");
     source(&left, SecurityMode::Standard);
     source(&right, SecurityMode::Standard);
-    let options = Options {
+    let mut options = Options {
         sources: vec![right.clone(), left],
         output: dir.path().join("dest"),
         kind: Kind::Merge,
@@ -163,13 +166,11 @@ fn conflicting_occurrence_ids_fail_and_identical_records_deduplicate() {
             .occurrences,
         3
     );
-    let journal = right.join("manifests/source.jsonl");
-    let original = std::fs::read_to_string(&journal).unwrap();
-    std::fs::write(
-        journal,
-        original.replace("\"source_path\":\"a\"", "\"source_path\":\"different\""),
-    )
-    .unwrap();
+    let conflicting = dir.path().join("conflicting");
+    source_with(&conflicting, SecurityMode::Standard, |records| {
+        records[0].source_path = "different".into();
+    });
+    options.sources[0] = conflicting;
     assert!(derive::run(&options, &Filters::default(), &AtomicBool::new(false)).is_err());
     assert!(!options.output.exists());
 }
@@ -178,7 +179,17 @@ fn conflicting_occurrence_ids_fail_and_identical_records_deduplicate() {
 fn oversized_samples_and_non_archive_ancestors_are_refused() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("source");
-    source(&input, SecurityMode::Standard);
+    source_with(&input, SecurityMode::Standard, |records| {
+        records[0].nested = Some(metadata::NestedProvenance {
+            schema_version: 1,
+            parent_sha256: records[1].sha256.clone(),
+            parent_occurrence_id: Some(records[1].occurrence_id.clone()),
+            root_source: "source.zip".to_owned(),
+            root_input_hash: records[1].sha256.clone(),
+            archive_depth: 0,
+            entry_chain: vec![0],
+        });
+    });
     let mut options = Options {
         sources: vec![input.clone()],
         output: dir.path().join("dest"),
@@ -194,25 +205,6 @@ fn oversized_samples_and_non_archive_ancestors_are_refused() {
     };
     let error = derive::run(&options, &Filters::default(), &AtomicBool::new(false)).unwrap_err();
     assert!(error.to_string().contains("eligible population"));
-    let journal = input.join("manifests/source.jsonl");
-    let mut records = metadata::load(&input).unwrap();
-    records[0].nested = Some(metadata::NestedProvenance {
-        schema_version: 1,
-        parent_sha256: records[1].sha256.clone(),
-        parent_occurrence_id: Some(records[1].occurrence_id.clone()),
-        root_source: "source.zip".to_owned(),
-        root_input_hash: records[1].sha256.clone(),
-        archive_depth: 0,
-        entry_chain: vec![0],
-    });
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .open(journal)
-        .unwrap();
-    for record in records {
-        metadata::append(&mut file, &record).unwrap();
-    }
     options.kind = Kind::Merge;
     let error = derive::run(&options, &Filters::default(), &AtomicBool::new(false)).unwrap_err();
     assert!(error.to_string().contains("ZIP container"));

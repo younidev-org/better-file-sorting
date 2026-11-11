@@ -102,7 +102,7 @@ fn hostile_names_and_case_collisions_are_safe_and_deterministic() {
 #[test]
 /// Ensure reserved and file-directory collisions fail before filesystem work.
 fn reserved_index_and_file_directory_collisions_fail_during_planning() {
-    let rules = Rules::parse("[organization]\ndefault_directory = 'layout.jsonl'").unwrap();
+    let rules = Rules::parse("[organization]\ndefault_directory = 'export.json'").unwrap();
     assert!(rules.plan(&[row("a", 'a', 'a')]).is_err());
     let rules = Rules::parse("[organization]\nduplicates = 'all'\ndefault_directory = '{source_archive}'\ndefault_filename = '{original_name}.sample'").unwrap();
     let mut a = row("a", 'a', 'a');

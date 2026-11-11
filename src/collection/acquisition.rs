@@ -17,6 +17,7 @@ use std::{
     fs::File,
     io::{Read, Write},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 pub fn parse_bytes(value: &str) -> Result<u64> {
@@ -218,24 +219,6 @@ impl Default for DownloadConfig {
     }
 }
 impl DownloadConfig {
-    /// Read older default inventories without changing their names or rewriting them.
-    pub fn inventory_for_read(&self) -> Result<PathBuf> {
-        if self.inventory.try_exists()? {
-            return Ok(self.inventory.clone());
-        }
-        if self
-            .inventory
-            .file_name()
-            .is_some_and(|name| name == "inventory.json")
-        {
-            let legacy = self.inventory.with_file_name("inventory.jsonl");
-            if legacy.try_exists()? {
-                return Ok(legacy);
-            }
-        }
-        Ok(self.inventory.clone())
-    }
-
     pub fn speed(&self) -> Result<Option<u64>> {
         self.max_speed
             .as_deref()
@@ -435,12 +418,23 @@ pub struct CompletedInput {
 /// Accessible payloads are checked against the recorded size and SHA-256.
 /// A sealed payload requires the user to grant access before ingestion.
 pub fn completed_inputs(config: &DownloadConfig) -> Result<Vec<CompletedInput>> {
-    config.validate()?;
+    completed_inputs_cancellable(config, &AtomicBool::new(false))
+}
+
+pub(crate) fn completed_inputs_cancellable(
+    config: &DownloadConfig,
+    cancelled: &AtomicBool,
+) -> Result<Vec<CompletedInput>> {
+    use crate::app::presentation::{Progress, byte_progress, byte_rate};
     use sha2::{Digest, Sha256};
+
+    config.validate()?;
+    let scanning = Progress::new(None, "Reading download receipts");
     let control = config.staging_dir.join("control");
     crate::ingest::discovery::check_path(&control)?;
     let mut inputs = vec![];
     for entry in std::fs::read_dir(control)? {
+        ensure!(!cancelled.load(Ordering::Relaxed), "interrupted");
         let entry = entry?;
         if entry.path().extension().is_none_or(|e| e != "json") {
             continue;
@@ -458,9 +452,34 @@ pub fn completed_inputs(config: &DownloadConfig) -> Result<Vec<CompletedInput>> 
             receipt.path == crate::collection::download::payload_path(config, &receipt.candidate),
             "unsafe receipt path"
         );
-        let path = config.staging_dir.join(&receipt.path);
+        inputs.push(CompletedInput {
+            path: config.staging_dir.join(&receipt.path),
+            receipt,
+        });
+    }
+    drop(scanning);
+    ensure!(!inputs.is_empty(), "no completed downloads found");
+    let total = inputs
+        .iter()
+        .try_fold(0u64, |sum, input| sum.checked_add(input.receipt.size));
+    let progress = Progress::new(Some(inputs.len() as u64), "Verifying downloaded ZIPs");
+    let message = |read| {
+        format!(
+            "{} ZIP bytes verified · {}",
+            byte_progress(read, total),
+            byte_rate(read, progress.0.elapsed())
+        )
+    };
+    let mut read = 0u64;
+    progress.0.set_message(message(read));
+    progress.0.force_draw();
+    let mut buffer = [0; HASH_BUFFER_BYTES];
+    for input in &mut inputs {
+        ensure!(!cancelled.load(Ordering::Relaxed), "interrupted");
+        let path = &input.path;
+        let receipt = &input.receipt;
         if crate::repository::security::validate_file(
-            &path,
+            path,
             crate::app::config::SecurityMode::Sealed,
         )
         .is_ok()
@@ -470,37 +489,39 @@ pub fn completed_inputs(config: &DownloadConfig) -> Result<Vec<CompletedInput>> 
             );
         }
         crate::repository::security::validate_file(
-            &path,
+            path,
             crate::app::config::SecurityMode::Standard,
         )?;
-        let mut reader = File::open(&path)?;
+        let mut reader = File::open(path)?;
         ensure!(
             reader.metadata()?.len() == receipt.size,
             "download size changed"
         );
         let mut hash = Sha256::new();
-        let mut buffer = [0; HASH_BUFFER_BYTES];
         loop {
+            ensure!(!cancelled.load(Ordering::Relaxed), "interrupted");
             let n = reader.read(&mut buffer)?;
             if n == 0 {
                 break;
             }
             hash.update(&buffer[..n]);
+            read = read.saturating_add(n as u64);
+            progress.streaming_message(|| message(read));
         }
         let actual: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
         ensure!(actual == receipt.sha256, "download hash changed");
-        inputs.push(CompletedInput {
-            path: path.canonicalize()?,
-            receipt,
-        });
+        input.path = path.canonicalize()?;
+        progress.0.inc(1);
+        progress.0.set_message(message(read));
     }
+    progress.0.force_draw();
+    drop(progress);
     inputs.sort_by(|a, b| {
         a.receipt
             .candidate
             .source_id
             .cmp(&b.receipt.candidate.source_id)
     });
-    ensure!(!inputs.is_empty(), "no completed downloads found");
     Ok(inputs)
 }
 

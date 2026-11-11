@@ -269,6 +269,9 @@ fn object_summary(records: &[Occurrence]) -> Result<(usize, u64)> {
 /// require standard repositories. Resumable runs retain private staging
 /// and verify completed work against the same source snapshots and settings.
 pub fn run(options: &Options, filter: &Filters, cancelled: &AtomicBool) -> Result<Report> {
+    use crate::app::presentation::{Progress, byte_progress, bytes};
+
+    let planning = Progress::new(None, "Planning dataset objects");
     interrupted(cancelled)?;
     ensure!(
         !options.sources.is_empty(),
@@ -535,6 +538,28 @@ pub fn run(options: &Options, filter: &Filters, cancelled: &AtomicBool) -> Resul
     if options.dry_run {
         return Ok(report);
     }
+    drop(planning);
+    let progress = Progress::new(
+        Some(
+            report
+                .groups
+                .iter()
+                .map(|group| group.unique_objects as u64)
+                .sum(),
+        ),
+        "Copying dataset objects",
+    );
+    let message = |copied, reused, reused_bytes| {
+        format!(
+            "{} processed · {} copied · {reused} reused ({})",
+            byte_progress(copied + reused_bytes, Some(estimated_copy_bytes)),
+            bytes(copied),
+            bytes(reused_bytes)
+        )
+    };
+    let mut copied_bytes = 0u64;
+    let mut reused_bytes = 0u64;
+    progress.0.set_message(message(0, 0, 0));
     // A resume stage and its lock survive cancellation; ordinary runs retain TempDir cleanup.
     let temporary;
     let stage;
@@ -637,9 +662,16 @@ pub fn run(options: &Options, filter: &Filters, cancelled: &AtomicBool) -> Resul
             } else {
                 destination.join(name)
             };
-            validate_finished(&target, rows, &dataset_report(rows)?, cancelled)?;
-            report.reused_objects += object_summary(rows)?.0;
+            validate_finished(&target, rows, &dataset_report(rows)?, cancelled, |size| {
+                report.reused_objects += 1;
+                reused_bytes += size;
+                progress.0.inc(1);
+                progress
+                    .0
+                    .set_message(message(copied_bytes, report.reused_objects, reused_bytes));
+            })?;
         }
+        progress.0.force_draw();
         return Ok(report);
     }
     if matches!(options.kind, Kind::Split { .. }) {
@@ -677,6 +709,7 @@ pub fn run(options: &Options, filter: &Filters, cancelled: &AtomicBool) -> Resul
                 if object.try_exists()? {
                     verify_object(&repo, row, cancelled)?;
                     report.reused_objects += 1;
+                    reused_bytes += row.size;
                 } else {
                     let source = &sources[owners[&row.sha256]];
                     let mut input = File::open(source.object(&row.sha256)?)?;
@@ -696,6 +729,9 @@ pub fn run(options: &Options, filter: &Filters, cancelled: &AtomicBool) -> Resul
                         ensure!(size <= row.size, "object exceeds recorded size");
                         hasher.update(&buffer[..count]);
                         output.write_all(&buffer[..count])?;
+                        progress.streaming_message(|| {
+                            message(copied_bytes + size, report.reused_objects, reused_bytes)
+                        });
                     }
                     let hash: String = hasher
                         .finalize()
@@ -707,7 +743,12 @@ pub fn run(options: &Options, filter: &Filters, cancelled: &AtomicBool) -> Resul
                         "object checksum or size mismatch"
                     );
                     repo.commit(output, &row.sha256, size)?;
+                    copied_bytes += size;
                 }
+                progress.0.inc(1);
+                progress
+                    .0
+                    .set_message(message(copied_bytes, report.reused_objects, reused_bytes));
             }
             pending.push(row.clone());
             if pending.len() == 128 {
@@ -741,6 +782,7 @@ pub fn run(options: &Options, filter: &Filters, cancelled: &AtomicBool) -> Resul
     File::open(&parent)?.sync_all()?;
     drop(state);
     drop(temporary);
+    progress.0.force_draw();
     Ok(report)
 }
 fn same_provenance(left: &Occurrence, right: &Occurrence) -> Result<bool> {
@@ -860,6 +902,7 @@ fn validate_finished(
     expected: &[Occurrence],
     expected_report: &serde_json::Value,
     cancelled: &AtomicBool,
+    mut on_reuse: impl FnMut(u64),
 ) -> Result<()> {
     let repo = Repository::existing(target)?;
     ensure!(
@@ -882,6 +925,7 @@ fn validate_finished(
     for row in &actual {
         if hashes.insert(&row.sha256) {
             verify_object(&repo, row, cancelled)?;
+            on_reuse(row.size);
         }
     }
     Ok(())

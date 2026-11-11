@@ -170,4 +170,4 @@ Optional `sha256`, `mismatch`, `min_size` and `max_size` fields correspond to th
 same CLI flags; sizes here are integer bytes with inclusive bounds. Unknown
 fields/formats and reversed size ranges fail configuration validation.
 
-Set `export_naming = "sample"`, `"original"` or `"detected"` in runtime configuration to choose ZIP payload suffixes; CLI `--naming` overrides it. Collection inventories now default to `inventory.json`; reads fall back to existing legacy `inventory.jsonl` without rewriting it.
+Set `export_naming = "sample"`, `"original"` or `"detected"` in runtime configuration to choose ZIP payload suffixes; CLI `--naming` overrides it. Collection inventories default to `inventory.json`. Rediscover if the default inventory is missing.

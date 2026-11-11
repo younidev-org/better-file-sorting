@@ -3,13 +3,20 @@ use super::{
     metadata, security,
     storage::{Repository, valid_hash},
 };
-use crate::{app::config::SecurityMode, ingest::discovery::check_path, selection::Filters};
+use crate::{
+    app::{
+        config::SecurityMode,
+        presentation::{Progress, byte_progress},
+    },
+    ingest::discovery::check_path,
+    selection::Filters,
+};
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufReader, Write},
     path::Path,
 };
 #[derive(Debug, Default, Serialize)]
@@ -21,12 +28,6 @@ pub struct Report {
     pub dry_run: bool,
     pub occurrence_ids: Vec<String>,
     pub hashes: Vec<String>,
-}
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct Removal {
-    schema_version: u32,
-    occurrence_ids: BTreeSet<String>,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -43,25 +44,7 @@ fn read_json(path: &Path) -> Result<serde_json::Value> {
     Ok(serde_json::from_reader(fs::File::open(path)?)?)
 }
 pub fn removed(root: &Path) -> Result<BTreeSet<String>> {
-    if super::catalog::exists(root)? {
-        return super::catalog::read(root)?.removed();
-    }
-    removed_legacy(root)
-}
-
-/// Legacy tombstones are imported once with the JSONL metadata.
-pub fn removed_legacy(root: &Path) -> Result<BTreeSet<String>> {
-    let path = root.join("operations/removal.json");
-    check_path(&path)?;
-    if !path.try_exists()? {
-        return Ok(BTreeSet::new());
-    }
-    let data: Removal = serde_json::from_value(read_json(&path)?)?;
-    ensure!(
-        data.schema_version == 1 && data.occurrence_ids.iter().all(|id| valid_hash(id)),
-        "invalid removal metadata"
-    );
-    Ok(data.occurrence_ids)
+    super::catalog::read(root)?.removed()
 }
 fn publish(root: &Path, name: &str, value: &impl Serialize) -> Result<()> {
     let directory = root.join("operations");
@@ -86,6 +69,7 @@ pub fn remove(root: &Path, filters: &Filters, dry_run: bool, confirm: bool) -> R
         "remove requires an explicit nonempty selector"
     );
     ensure!(dry_run || confirm, "remove requires --confirm");
+    let planning = Progress::new(None, "Loading records for removal");
     let repo = Repository::existing(root)?;
     ensure!(
         !crate::operations::status(repo.root())?
@@ -93,7 +77,6 @@ pub fn remove(root: &Path, filters: &Filters, dry_run: bool, confirm: bool) -> R
             .any(|r| r.state == "running"),
         "active operations prevent cleanup"
     );
-    let _progress = crate::app::presentation::Progress::new(None, "Planning occurrence removal");
     let mut rows = metadata::load_all(repo.root())?;
     let removed = removed(repo.root())?;
     rows.retain(|row| !removed.contains(&row.occurrence_id));
@@ -101,6 +84,8 @@ pub fn remove(root: &Path, filters: &Filters, dry_run: bool, confirm: bool) -> R
         .into_iter()
         .map(|r| r.occurrence_id)
         .collect();
+    drop(planning);
+    let progress = Progress::new(Some(rows.len() as u64), "Checking removal records");
     for row in rows.iter().filter(|r| !selected.contains(&r.occurrence_id)) {
         if let Some(nested) = &row.nested
             && let Some(parent) = &nested.parent_occurrence_id
@@ -112,6 +97,7 @@ pub fn remove(root: &Path, filters: &Filters, dry_run: bool, confirm: bool) -> R
                 "removal would leave retained nested ancestry dangling"
             );
         }
+        progress.0.inc(1);
     }
     let mut hashes = BTreeSet::new();
     let mut report = Report {
@@ -126,6 +112,7 @@ pub fn remove(root: &Path, filters: &Filters, dry_run: bool, confirm: bool) -> R
                 .checked_add(row.size)
                 .ok_or_else(|| anyhow::anyhow!("byte count overflow"))?;
         }
+        progress.0.inc(1);
     }
     report.candidate_objects = hashes.len();
     report.occurrence_ids = selected.iter().cloned().collect();
@@ -137,6 +124,7 @@ pub fn remove(root: &Path, filters: &Filters, dry_run: bool, confirm: bool) -> R
         .collect::<BTreeSet<_>>()
         .len();
     if !dry_run && !selected.is_empty() {
+        progress.0.set_message("publishing removal");
         repo.with_catalog(|catalog| catalog.remove(&selected))?;
     }
     Ok(report)
@@ -219,23 +207,6 @@ fn collect_hashes(value: &serde_json::Value, pins: &mut BTreeSet<String>) {
         }
         _ => {}
     }
-}
-fn pin_json_lines(path: &Path, pins: &mut BTreeSet<String>) -> Result<()> {
-    security::validate_file(path, SecurityMode::Standard)?;
-    let mut reader = BufReader::new(fs::File::open(path)?);
-    loop {
-        let mut line = Vec::new();
-        let n = Read::take(&mut reader, 1024 * 1024 + 1).read_until(b'\n', &mut line)?;
-        if n == 0 {
-            break;
-        }
-        ensure!(
-            n <= 1024 * 1024 && line.ends_with(b"\n"),
-            "invalid retained reference journal"
-        );
-        collect_hashes(&serde_json::from_slice::<serde_json::Value>(&line)?, pins);
-    }
-    Ok(())
 }
 pub(crate) fn audit_metadata(repo: &Repository) -> Result<std::collections::BTreeMap<String, u64>> {
     let retained_hashes = validated_pins(repo)?;
@@ -439,10 +410,6 @@ fn validated_pins(repo: &Repository) -> Result<BTreeSet<String>> {
                     && data.selected_occurrence_ids.iter().all(|h| valid_hash(h)),
                 "invalid dataset report"
             );
-        } else if relative == Path::new("classification.jsonl") {
-            if !super::catalog::exists(repo.root())? {
-                pin_json_lines(entry.path(), &mut pins)?;
-            }
         } else if relative == Path::new("reclassification") && entry.file_type().is_dir() {
         } else if relative.parent() == Some(Path::new("reclassification"))
             && entry.file_type().is_file()
@@ -457,85 +424,52 @@ fn validated_pins(repo: &Repository) -> Result<BTreeSet<String>> {
             pins.insert(hash.to_owned());
             collect_hashes(&value, &mut pins);
         } else if relative.components().count() == 1
+            && relative.extension().is_some_and(|e| e == "json")
             && relative.file_stem().is_some_and(|stem| {
-                let generated = stem
-                    .to_str()
+                stem.to_str()
                     .and_then(|s| s.split_once("-run-"))
                     .is_some_and(|(timestamp, suffix)| {
                         !suffix.is_empty()
                             && chrono::NaiveDateTime::parse_from_str(timestamp, "%Y%m%dT%H%M%S%.fZ")
                                 .is_ok()
-                    });
-                generated
-                    || repo
-                        .root()
-                        .join("manifests")
-                        .join(format!("{}.jsonl", stem.to_string_lossy()))
-                        .is_file()
+                    })
             })
         {
-            if relative.extension().is_some_and(|e| e == "jsonl") {
-                security::validate_file(entry.path(), SecurityMode::Standard)?;
-                let mut reader = BufReader::new(fs::File::open(entry.path())?);
-                loop {
-                    let mut line = Vec::new();
-                    let n =
-                        Read::take(&mut reader, 1024 * 1024 + 1).read_until(b'\n', &mut line)?;
-                    if n == 0 {
-                        break;
-                    }
-                    ensure!(
-                        n <= 1024 * 1024 && line.ends_with(b"\n"),
-                        "invalid failure journal"
-                    );
-                    #[derive(Deserialize)]
-                    #[serde(deny_unknown_fields)]
-                    struct Failure {
-                        source_path: String,
-                        entry_index: Option<usize>,
-                        error: String,
-                    }
-                    let failure: Failure = serde_json::from_slice(&line)?;
-                    let _ = (failure.source_path, failure.entry_index, failure.error);
-                }
-            } else if relative.extension().is_some_and(|e| e == "json") {
-                let value = read_json(entry.path())?;
-                let fields = [
-                    "run_id",
-                    "accepted",
-                    "skipped_files",
-                    "reused_occurrences",
-                    "failures",
-                    "interrupted",
-                    "elapsed_seconds",
-                    "bytes_per_second",
-                    "summary",
-                    "first_failure",
-                    "failure_details",
-                    "zip",
-                    "nested",
-                ];
-                let object = value
-                    .as_object()
-                    .ok_or_else(|| anyhow::anyhow!("invalid run report"))?;
-                ensure!(
-                    object.keys().all(|k| fields.contains(&k.as_str()))
-                        && fields[..9].iter().all(|k| object.contains_key(*k)),
-                    "unknown run report schema prevents prune"
-                );
-                ensure!(
-                    value["run_id"].as_str() == relative.file_stem().and_then(|s| s.to_str()),
-                    "run report identity mismatch"
-                );
-                collect_hashes(&value, &mut pins);
-            } else {
-                anyhow::bail!("unknown run report prevents prune");
-            }
+            let value = read_json(entry.path())?;
+            let fields = [
+                "run_id",
+                "accepted",
+                "skipped_files",
+                "reused_occurrences",
+                "failures",
+                "interrupted",
+                "elapsed_seconds",
+                "bytes_per_second",
+                "summary",
+                "first_failure",
+                "failure_details",
+                "zip",
+                "nested",
+            ];
+            let object = value
+                .as_object()
+                .ok_or_else(|| anyhow::anyhow!("invalid run report"))?;
+            ensure!(
+                object.keys().all(|k| fields.contains(&k.as_str()))
+                    && fields[..9].iter().all(|k| object.contains_key(*k)),
+                "unknown run report schema prevents prune"
+            );
+            ensure!(
+                value["run_id"].as_str() == relative.file_stem().and_then(|s| s.to_str()),
+                "run report identity mismatch"
+            );
+            collect_hashes(&value, &mut pins);
         } else {
             anyhow::bail!("unsupported reports prevent prune");
         }
     }
-    for entry in walkdir::WalkDir::new(repo.root().join("views"))
+    let views = repo.root().join("views");
+    for entry in walkdir::WalkDir::new(&views)
         .min_depth(1)
         .follow_links(false)
     {
@@ -546,36 +480,6 @@ fn validated_pins(repo: &Repository) -> Result<BTreeSet<String>> {
         }
         let name = entry.file_name().to_string_lossy();
         match name.as_ref() {
-            "layout.jsonl" => {
-                pin_json_lines(entry.path(), &mut pins)?;
-                let mut reader = BufReader::new(fs::File::open(entry.path())?);
-                loop {
-                    let mut line = Vec::new();
-                    let n =
-                        Read::take(&mut reader, 1024 * 1024 + 1).read_until(b'\n', &mut line)?;
-                    if n == 0 {
-                        break;
-                    }
-                    #[derive(Deserialize)]
-                    #[serde(deny_unknown_fields)]
-                    struct Layout {
-                        path: String,
-                        sha256: String,
-                        occurrence_id: String,
-                    }
-                    let row: Layout = serde_json::from_slice(&line)?;
-                    ensure!(
-                        valid_hash(&row.sha256)
-                            && valid_hash(&row.occurrence_id)
-                            && !row.path.is_empty()
-                            && Path::new(&row.path)
-                                .components()
-                                .all(|c| matches!(c, std::path::Component::Normal(_)))
-                            && !row.path.contains('\\'),
-                        "invalid retained view reference"
-                    );
-                }
-            }
             "rules.json" => {
                 let _: crate::organization::rules::Rules =
                     serde_json::from_value(read_json(entry.path())?)?;
@@ -597,8 +501,12 @@ fn validated_pins(repo: &Repository) -> Result<BTreeSet<String>> {
                 );
             }
             _ => {
-                // Hardlinked view payloads pin their canonical inode below, regardless of names.
-                ensure!(entry.file_type().is_file(), "unsafe view entry");
+                // Payloads are under a group directory. Unknown generation metadata may hold references.
+                ensure!(
+                    entry.path().strip_prefix(&views)?.components().count() >= 3
+                        && entry.file_type().is_file(),
+                    "unsupported view metadata prevents prune"
+                );
             }
         }
     }
@@ -606,6 +514,7 @@ fn validated_pins(repo: &Repository) -> Result<BTreeSet<String>> {
 }
 pub fn prune(root: &Path, dry_run: bool, confirm: bool) -> Result<Report> {
     ensure!(dry_run || confirm, "prune requires --confirm");
+    let scanning = Progress::new(None, "Scanning retained references");
     let repo = Repository::existing(root)?;
     ensure!(
         !crate::operations::status(repo.root())?
@@ -613,7 +522,6 @@ pub fn prune(root: &Path, dry_run: bool, confirm: bool) -> Result<Report> {
             .any(|r| r.state == "running"),
         "active operations prevent cleanup"
     );
-    let progress = crate::app::presentation::Progress::new(None, "Scanning retained references");
     let pins = validated_pins(&repo)?;
     let operations = repo.root().join("operations");
     let journal_path = operations.join("prune.json");
@@ -625,7 +533,9 @@ pub fn prune(root: &Path, dry_run: bool, confirm: bool) -> Result<Report> {
             "invalid prune journal"
         );
     }
-    let mut candidates = BTreeSet::new();
+    scanning.0.set_prefix("Scanning stored objects");
+    let mut scanned = 0u64;
+    let mut candidates = BTreeMap::new();
     let mut report = Report {
         pinned: pins.len(),
         dry_run,
@@ -643,6 +553,8 @@ pub fn prune(root: &Path, dry_run: bool, confirm: bool) -> Result<Report> {
                 "invalid canonical object path"
             );
             security::validate_file(&entry.path(), repo.mode())?;
+            scanned += 1;
+            scanning.streaming_message(|| format!("{scanned} objects checked"));
             #[cfg(unix)]
             {
                 use std::os::unix::fs::MetadataExt;
@@ -652,35 +564,43 @@ pub fn prune(root: &Path, dry_run: bool, confirm: bool) -> Result<Report> {
                 }
             }
             if !pins.contains(&hash) {
+                let size = fs::metadata(entry.path())?.len();
                 report.bytes = report
                     .bytes
-                    .checked_add(fs::metadata(entry.path())?.len())
+                    .checked_add(size)
                     .ok_or_else(|| anyhow::anyhow!("byte count overflow"))?;
-                candidates.insert(hash);
+                candidates.insert(hash, size);
             }
         }
     }
     report.candidate_objects = candidates.len();
-    report.hashes = candidates.iter().cloned().collect();
+    report.hashes = candidates.keys().cloned().collect();
+    drop(scanning);
     if !dry_run && (!candidates.is_empty() || journal_path.try_exists()?) {
+        let progress = Progress::new(Some(candidates.len() as u64), "Pruning objects");
+        let message =
+            |reclaimed| format!("{} reclaimed", byte_progress(reclaimed, Some(report.bytes)));
+        let mut reclaimed = 0u64;
+        progress.0.set_message(message(reclaimed));
         publish(
             repo.root(),
             "prune.json",
             &Journal {
                 schema_version: 1,
-                hashes: candidates.clone(),
+                hashes: candidates.keys().cloned().collect(),
             },
         )?;
-        progress.0.set_message("Pruning unreferenced objects");
-        progress.0.set_length(candidates.len() as u64);
-        for hash in candidates {
+        for (hash, size) in candidates {
             let path = repo.object(&hash)?;
             fs::remove_file(&path)?;
+            reclaimed += size;
             progress.0.inc(1);
+            progress.0.set_message(message(reclaimed));
             fs::File::open(path.parent().expect("object parent"))?.sync_all()?;
         }
         fs::remove_file(&journal_path)?;
         fs::File::open(operations)?.sync_all()?;
+        progress.0.force_draw();
     }
     Ok(report)
 }

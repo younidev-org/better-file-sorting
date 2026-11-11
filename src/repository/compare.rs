@@ -1,5 +1,6 @@
 //! Compare effective repository metadata without reading payloads.
 use super::{metadata, storage::Repository};
+use crate::app::presentation::Progress;
 use anyhow::Result;
 use serde::Serialize;
 use std::{
@@ -22,7 +23,10 @@ pub struct Report {
     pub right_detector_versions: Vec<String>,
 }
 fn compare(left: &[metadata::Occurrence], right: &[metadata::Occurrence]) -> Result<Report> {
-    fn group(rows: &[metadata::Occurrence]) -> Result<BTreeMap<String, (usize, BTreeSet<String>)>> {
+    fn group(
+        rows: &[metadata::Occurrence],
+        progress: &Progress,
+    ) -> Result<BTreeMap<String, (usize, BTreeSet<String>)>> {
         let mut map = BTreeMap::new();
         for row in rows {
             let entry = map
@@ -30,11 +34,13 @@ fn compare(left: &[metadata::Occurrence], right: &[metadata::Occurrence]) -> Res
                 .or_insert_with(|| (0, BTreeSet::new()));
             entry.0 += 1;
             entry.1.insert(serde_json::to_string(&row.detection)?);
+            progress.0.inc(1);
         }
         Ok(map)
     }
-    let l = group(left)?;
-    let r = group(right)?;
+    let progress = Progress::new(Some((left.len() + right.len()) as u64), "Comparing records");
+    let l = group(left, &progress)?;
+    let r = group(right, &progress)?;
     let versions = |rows: &[metadata::Occurrence]| {
         rows.iter()
             .map(|x| x.detection.detector_version.clone())
@@ -66,12 +72,13 @@ fn compare(left: &[metadata::Occurrence], right: &[metadata::Occurrence]) -> Res
     })
 }
 pub fn run(left: &Path, right: &Path) -> Result<Report> {
-    let _progress = crate::app::presentation::Progress::new(None, "Comparing repository metadata");
+    let loading = Progress::new(None, "Loading repositories for comparison");
     let left = left.canonicalize()?;
     let right = right.canonicalize()?;
     if left == right {
         let repo = Repository::existing(&left)?;
         let records = metadata::load(repo.root())?;
+        drop(loading);
         return compare(&records, &records);
     }
     // Lock in canonical path order so reverse comparisons have the same lock order.
@@ -84,6 +91,7 @@ pub fn run(left: &Path, right: &Path) -> Result<Report> {
     let b = Repository::existing(second)?;
     let ar = metadata::load(a.root())?;
     let br = metadata::load(b.root())?;
+    drop(loading);
     if left < right {
         compare(&ar, &br)
     } else {

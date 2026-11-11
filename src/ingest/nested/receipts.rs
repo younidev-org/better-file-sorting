@@ -77,6 +77,7 @@ pub(super) fn direct(
     budget: &mut Budget,
     cache: &Cache,
     report: &mut TreeReport,
+    on_read: &impl Fn(u64),
 ) -> Result<Direct> {
     let policy = policy(config);
     let path = receipt_path(repo, hash, &policy);
@@ -176,7 +177,7 @@ pub(super) fn direct(
             continue;
         }
         let encrypted = data.encrypted();
-        let item = crate::ingest::extraction::extract_budgeted(
+        let item = crate::ingest::extraction::extract_with_progress(
             &mut archive,
             index,
             passwords,
@@ -185,6 +186,7 @@ pub(super) fn direct(
             &mut total,
             cancelled,
             Some(budget),
+            on_read,
         );
         match item {
             Ok(mut item) => {

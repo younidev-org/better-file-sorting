@@ -189,6 +189,14 @@ fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
     Ok(())
 }
 pub fn hash_file(file: &mut File, cancelled: &AtomicBool) -> Result<String> {
+    hash_file_with_progress(file, cancelled, |_| {})
+}
+
+pub(crate) fn hash_file_with_progress(
+    file: &mut File,
+    cancelled: &AtomicBool,
+    mut on_read: impl FnMut(u64),
+) -> Result<String> {
     use sha2::{Digest, Sha256};
     file.seek(SeekFrom::Start(0))?;
     let mut hash = Sha256::new();
@@ -200,6 +208,7 @@ pub fn hash_file(file: &mut File, cancelled: &AtomicBool) -> Result<String> {
             break;
         }
         hash.update(&buf[..n]);
+        on_read(n as u64);
     }
     file.seek(SeekFrom::Start(0))?;
     Ok(hash.finalize().iter().map(|b| format!("{b:02x}")).collect())
@@ -275,6 +284,18 @@ pub fn ingest_root(
     cache: &Cache,
     run_id: &str,
 ) -> Result<TreeReport> {
+    ingest_root_with_progress(repo, path, config, cancelled, cache, run_id, &|_| {})
+}
+
+pub(crate) fn ingest_root_with_progress(
+    repo: &Repository,
+    path: &Path,
+    config: &Config,
+    cancelled: &AtomicBool,
+    cache: &Cache,
+    run_id: &str,
+    on_read: &impl Fn(u64),
+) -> Result<TreeReport> {
     crate::ingest::discovery::check_path(path)?;
     let mut file = File::open(path)?;
     let size = file.metadata()?.len();
@@ -338,6 +359,7 @@ pub fn ingest_root(
         &security::passwords(config.password_file.as_deref())?,
         cancelled,
         cache,
+        on_read,
     )?;
     if !cancelled.load(Ordering::Relaxed) {
         ensure!(
@@ -368,6 +390,9 @@ pub struct Preview {
     pub expanded_bytes: Option<u64>,
 }
 pub fn preview(repo: &Repository, config: &Config) -> Result<Preview> {
+    use crate::app::presentation::Progress;
+
+    let planning = Progress::new(None, "Finding candidate ZIPs");
     ensure!(
         crate::repository::cleanup::removed(repo.root())?.is_empty(),
         "nested analysis after logical removal requires a fresh repository"
@@ -383,6 +408,8 @@ pub fn preview(repo: &Repository, config: &Config) -> Result<Preview> {
         })
         .collect();
     let hashes: std::collections::BTreeSet<_> = candidates.iter().map(|r| &r.sha256).collect();
+    drop(planning);
+    let progress = Progress::new(Some(hashes.len() as u64), "Checking candidate ZIPs");
     let mut reusable = 0;
     for hash in &hashes {
         let p = receipt_path(repo, hash, &policy(config));
@@ -401,6 +428,7 @@ pub fn preview(repo: &Repository, config: &Config) -> Result<Preview> {
             }
             reusable += 1;
         }
+        progress.0.inc(1);
     }
     Ok(Preview {
         schema_version: 1,
@@ -452,8 +480,13 @@ pub fn analyze(repo: &Repository, config: &Config, cancelled: &AtomicBool) -> Re
                 && is_zip(&r.detection)
         })
         .collect();
-    let progress =
-        crate::app::presentation::Progress::new(Some(roots.len() as u64), "Analyzing root ZIPs");
+    use crate::app::presentation::{Progress, bytes};
+    use std::cell::Cell;
+
+    let progress = Progress::new(Some(roots.len() as u64), "Expanding root ZIPs");
+    let expanded = Cell::new(0u64);
+    let message = |failures| format!("{} expanded · {failures} failed", bytes(expanded.get()));
+    progress.0.set_message(message(0));
     for mut parent in roots {
         parent.run_id = run_id.clone();
         let next = traverse(
@@ -480,18 +513,16 @@ pub fn analyze(repo: &Repository, config: &Config, cancelled: &AtomicBool) -> Re
             &passwords,
             cancelled,
             &cache,
+            &|count| {
+                expanded.set(expanded.get().saturating_add(count));
+                progress.streaming_message(|| message(report.failures));
+            },
         )?;
         report.merge(next);
         progress.0.inc(1);
-        progress.0.set_message(format!(
-            "archives extracted {} / reused {}; entries accepted {} / reused {}; failures {}",
-            report.metrics.extracted_archives,
-            report.metrics.reused_archives,
-            report.accepted,
-            report.reused_occurrences,
-            report.failures
-        ));
+        progress.0.set_message(message(report.failures));
     }
+    progress.0.force_draw();
     drop(progress);
     let rows = metadata::load(repo.root())?;
     let rules =

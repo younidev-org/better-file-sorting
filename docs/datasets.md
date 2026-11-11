@@ -1,6 +1,6 @@
 # Reproducible derived datasets
 
-`sample`, `split`, and `merge` build independent repositories. Payloads remain SHA-256-addressed files; SQLite stores their metadata. These commands preserve original provenance and effective classifications. They do not emit occurrence JSONL exports.
+`sample`, `split`, and `merge` build independent repositories. Payloads remain SHA-256-addressed files; SQLite stores their metadata. These commands preserve original provenance and effective classifications.
 
 ```sh
 bfsort sample SOURCE --count 100 --seed 7 -o SAMPLE

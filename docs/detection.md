@@ -18,7 +18,7 @@ meaning. They are intentionally independent of the stricter detailed detector:
 for example an incomplete ELF prefix can retain legacy `file_type = "elf"` while
 its detailed format is `unknown`. Use `detected_format` for precise content grouping.
 Old records default to `not_evaluated` for detection and mismatch, never `match`.
-Older bfsort binaries do not accept the new fields; use this version for new manifests.
+Use a release compatible with the repository's SQLite schema.
 
 Explicitly analyze an old **standard-mode** repository:
 
@@ -26,7 +26,7 @@ Explicitly analyze an old **standard-mode** repository:
 bfsort reclassify ./repository --resume
 ```
 
-This hash-verifies each selected unique object, performs bounded classification and atomically updates SQLite classification metadata. Legacy classification sidecars remain readable during migration; new runs do not write them. Cancellation preserves the previous committed catalog values. Per-object checkpoints reuse detection with `--resume`; objects are still hash-verified. A new view is published using saved grouping rules; older views fall back to `by-format`.
+This hash-verifies each selected unique object, performs bounded classification and atomically updates SQLite classification metadata. Cancellation preserves the previous committed catalog values. Per-object checkpoints reuse detection with `--resume`; objects are still hash-verified. A new view is published using saved grouping rules; older views fall back to `by-format`.
 Sealed repositories are refused; bfsort never changes payload permissions automatically.
 
 ## Supported identifiers and evidence
@@ -140,7 +140,7 @@ Table and JSON include those counts; CSV contains selected rows only.
 `--quiet` suppresses stdout, while `--output` still writes the requested artifact.
 Output files are created atomically and never replace an existing destination.
 
-JSON contains `counts` and `rows`; JSONL contains one row per line. Each row has
+JSON contains `counts` and `rows`. Each row has
 SHA-256, occurrence ID, source archive, original entry name/extension, detected
 family/format, MIME, confidence, mismatch status/reason, detector version. CSV
 quotes every data field and doubles embedded quotes; JSON uses serde serialization.

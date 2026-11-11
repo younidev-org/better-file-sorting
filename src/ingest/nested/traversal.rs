@@ -187,6 +187,7 @@ pub(super) fn traverse(
     passwords: &[String],
     cancelled: &AtomicBool,
     cache: &Cache,
+    on_read: &impl Fn(u64),
 ) -> Result<TreeReport> {
     let (checkpoint_path, mut checkpoint) = checkpoint(repo, &task, config)?;
     preflight(repo, &task, config, cache, cancelled)?;
@@ -229,6 +230,7 @@ pub(super) fn traverse(
             &mut budget,
             cache,
             &mut report,
+            on_read,
         );
         match result {
             Err(error) => {

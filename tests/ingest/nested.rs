@@ -594,12 +594,7 @@ fn filtered_nested_members_preserve_only_structural_zip_ancestry() {
             .join(excluded)
             .exists()
     );
-    assert!(
-        fs::read_dir(repo.join("manifests"))
-            .unwrap()
-            .next()
-            .is_none()
-    );
+    assert!(!repo.join("manifests").exists());
     let again = run(&[
         "ingest".as_ref(),
         root.as_os_str(),
