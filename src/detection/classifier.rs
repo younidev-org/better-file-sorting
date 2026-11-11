@@ -44,30 +44,43 @@ pub fn classify(prefix: &[u8]) -> &'static str {
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Seek, SeekFrom};
 
-macro_rules! identifiers {
-    ($name:ident { $($variant:ident => $value:literal),+ $(,)? }) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-        pub enum $name { $(#[serde(rename = $value)] $variant),+ }
-        impl $name {
-            pub fn as_str(self) -> &'static str { match self { $(Self::$variant => $value),+ } }
-        }
-    };
+include!(concat!(env!("OUT_DIR"), "/formats.rs"));
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Family {
+    NotEvaluated,
+    Unknown,
+    Ambiguous,
+    Executable,
+    Document,
+    Script,
+    Text,
+    Archive,
+    Package,
+    Image,
+    Database,
 }
-identifiers!(Format {
-    NotEvaluated => "not_evaluated", Unknown => "unknown", Ambiguous => "ambiguous",
-    Pe => "pe", Elf => "elf", Macho => "macho", Pdf => "pdf", Rtf => "rtf", Cfb => "cfb",
-    Docx => "docx", Xlsx => "xlsx", Pptx => "pptx", Javascript => "javascript",
-    Powershell => "powershell", Python => "python", Shell => "shell", Batch => "batch",
-    Html => "html", Xml => "xml", Json => "json", Text => "text", Zip => "zip",
-    Rar => "rar", SevenZip => "7z", Tar => "tar", Gzip => "gzip", Bzip2 => "bzip2", Xz => "xz",
-    Jar => "jar", Apk => "apk", Png => "png", Jpeg => "jpeg", Gif => "gif", Webp => "webp",
-    Bmp => "bmp", Tiff => "tiff", Sqlite => "sqlite", Wasm => "wasm", Dex => "dex", JavaClass => "java_class", Cab => "cab", Zstd => "zstd", Lz4 => "lz4", Ar => "ar", Swf => "swf", Lnk => "lnk", Doc => "doc", Xls => "xls", Ppt => "ppt", Msi => "msi"
-});
-identifiers!(Family {
-    NotEvaluated => "not_evaluated", Unknown => "unknown", Ambiguous => "ambiguous",
-    Executable => "executable", Document => "document", Script => "script", Text => "text",
-    Archive => "archive", Package => "package", Image => "image", Database => "database"
-});
+
+impl Family {
+    /// Return the identifier used in configuration and reports.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotEvaluated => "not_evaluated",
+            Self::Unknown => "unknown",
+            Self::Ambiguous => "ambiguous",
+            Self::Executable => "executable",
+            Self::Document => "document",
+            Self::Script => "script",
+            Self::Text => "text",
+            Self::Archive => "archive",
+            Self::Package => "package",
+            Self::Image => "image",
+            Self::Database => "database",
+        }
+    }
+}
+
 #[derive(
     Debug,
     Default,
@@ -130,74 +143,11 @@ impl Default for Detection {
 }
 impl Detection {
     pub(super) fn new(format: Format, confidence: Confidence, evidence: &str) -> Self {
-        use Format::*;
-        let (family, mime) = match format {
-            Dex => (Family::Executable, "application/vnd.android.dex"),
-            JavaClass => (Family::Executable, "application/java-vm"),
-            Cab => (Family::Archive, "application/vnd.ms-cab-compressed"),
-            Zstd => (Family::Archive, "application/zstd"),
-            Lz4 => (Family::Archive, "application/x-lz4"),
-            Ar => (Family::Archive, "application/x-archive"),
-            Swf => (Family::Document, "application/x-shockwave-flash"),
-            Lnk => (Family::Document, "application/x-ms-shortcut"),
-            Doc => (Family::Document, "application/msword"),
-            Xls => (Family::Document, "application/vnd.ms-excel"),
-            Ppt => (Family::Document, "application/vnd.ms-powerpoint"),
-            Msi => (Family::Package, "application/x-msi"),
-            Pe => (
-                Family::Executable,
-                "application/vnd.microsoft.portable-executable",
-            ),
-            Elf => (Family::Executable, "application/x-elf"),
-            Macho => (Family::Executable, "application/x-mach-binary"),
-            Wasm => (Family::Executable, "application/wasm"),
-            Pdf => (Family::Document, "application/pdf"),
-            Rtf => (Family::Document, "application/rtf"),
-            Cfb => (Family::Document, "application/x-ole-storage"),
-            Docx => (
-                Family::Document,
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            ),
-            Xlsx => (
-                Family::Document,
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            ),
-            Pptx => (
-                Family::Document,
-                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            ),
-            Javascript => (Family::Script, "text/javascript"),
-            Powershell => (Family::Script, "text/x-powershell"),
-            Python => (Family::Script, "text/x-python"),
-            Shell => (Family::Script, "text/x-shellscript"),
-            Batch => (Family::Script, "application/x-bat"),
-            Html => (Family::Document, "text/html"),
-            Xml => (Family::Document, "application/xml"),
-            Json => (Family::Text, "application/json"),
-            Text => (Family::Text, "text/plain"),
-            Zip => (Family::Archive, "application/zip"),
-            Rar => (Family::Archive, "application/vnd.rar"),
-            SevenZip => (Family::Archive, "application/x-7z-compressed"),
-            Tar => (Family::Archive, "application/x-tar"),
-            Gzip => (Family::Archive, "application/gzip"),
-            Bzip2 => (Family::Archive, "application/x-bzip2"),
-            Xz => (Family::Archive, "application/x-xz"),
-            Jar => (Family::Package, "application/java-archive"),
-            Apk => (Family::Package, "application/vnd.android.package-archive"),
-            Png => (Family::Image, "image/png"),
-            Jpeg => (Family::Image, "image/jpeg"),
-            Gif => (Family::Image, "image/gif"),
-            Webp => (Family::Image, "image/webp"),
-            Bmp => (Family::Image, "image/bmp"),
-            Tiff => (Family::Image, "image/tiff"),
-            Sqlite => (Family::Database, "application/vnd.sqlite3"),
-            Unknown | NotEvaluated => (Family::Unknown, ""),
-            Ambiguous => (Family::Ambiguous, ""),
-        };
+        let (family, mime) = format.metadata();
         Self {
             detected_family: family,
             detected_format: format,
-            mime_type: (!mime.is_empty()).then(|| mime.into()),
+            mime_type: mime.map(str::to_owned),
             confidence,
             evidence: vec![evidence.into()],
             alternatives: vec![],
@@ -576,5 +526,25 @@ pub fn detect_reader<R: Read + Seek>(prefix: &[u8], reader: &mut R) -> Detection
         super::compound::detect(reader).unwrap_or(detection)
     } else {
         detection
+    }
+}
+
+#[cfg(test)]
+mod format_metadata_tests {
+    use super::*;
+
+    #[test]
+    fn bundled_metadata_covers_every_format() {
+        for &format in Format::ALL {
+            let (family, mime) = format.metadata();
+            assert_eq!(serde_json::to_value(format).unwrap(), format.as_str());
+            assert_eq!(serde_json::to_value(family).unwrap(), family.as_str());
+            assert!(mime.is_none_or(|mime| mime.contains('/')));
+        }
+        assert_eq!(
+            Format::Shell.metadata(),
+            (Family::Script, Some("text/x-shellscript"))
+        );
+        assert_eq!(Format::SevenZip.as_str(), "7z");
     }
 }
