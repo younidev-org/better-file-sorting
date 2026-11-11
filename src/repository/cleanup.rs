@@ -213,13 +213,11 @@ fn collect_hashes(value: &serde_json::Value, pins: &mut BTreeSet<String>) {
         _ => {}
     }
 }
-pub(crate) fn audit_metadata(repo: &Repository) -> Result<std::collections::BTreeMap<String, u64>> {
+pub(crate) fn audit_metadata(
+    repo: &Repository,
+    identities: &BTreeMap<&str, &metadata::Occurrence>,
+) -> Result<BTreeMap<String, u64>> {
     let (retained_hashes, mut objects) = retained_references(repo)?;
-    let records = metadata::load_all(repo.root())?;
-    let identities: std::collections::BTreeMap<_, _> = records
-        .iter()
-        .map(|r| (r.occurrence_id.as_str(), r))
-        .collect();
     let catalog = super::catalog::read(repo.root())?;
     for generation in catalog.views()? {
         for view in catalog.view_plan(&generation)? {

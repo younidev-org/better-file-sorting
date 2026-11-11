@@ -534,10 +534,19 @@ fn ingest_repository(config: &Config, cancelled: &AtomicBool, rules: &Rules) -> 
                     &fingerprint,
                     config.remote_inputs.get(path),
                 ))?);
-                let input_hash = if checkpoints {
-                    Some(hash_input(path, cancelled)?)
-                } else {
+                let input_hash = if !checkpoints {
                     None
+                } else if let Some(verified) = config.verified_inputs.get(path) {
+                    if !verified.unchanged(path)? {
+                        security::validate_file(path, SecurityMode::Standard)?;
+                        ensure!(
+                            hash_input(path, cancelled)? == verified.sha256,
+                            "download hash changed"
+                        );
+                    }
+                    Some(verified.sha256.clone())
+                } else {
+                    Some(hash_input(path, cancelled)?)
                 };
                 let checkpoint_path = checkpoint_dir.join(format!(
                     "{}.json",

@@ -6,7 +6,7 @@
 //! while their creation handles receive data. Only synchronized completed payloads are
 //! published. Reruns validate sealed cache records, and failures never become receipts.
 
-/// Maximum body read chunk, also bounding the speed limiter burst.
+/// Maximum body read chunk and per-worker read-ahead during pacing.
 const TRANSFER_BUFFER_BYTES: usize = 16 * 1024;
 /// Maximum sanitized label length, leaving room for the source hash and extension.
 const MAX_FILENAME_BYTES: usize = 240;
@@ -28,7 +28,7 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
-        Mutex,
+        Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
@@ -149,6 +149,8 @@ fn staged_bytes(root: &Path) -> Result<u64> {
 struct Budget {
     transferred: u64,
     staged: u64,
+    reserved_transfer: u64,
+    reserved_staging: u64,
     pace: Instant,
     completed: usize,
     failed: usize,
@@ -156,6 +158,64 @@ struct Budget {
     expected_bytes: Option<u64>,
 }
 impl Budget {
+    fn new(staged: u64) -> Self {
+        Self {
+            transferred: 0,
+            staged,
+            reserved_transfer: 0,
+            reserved_staging: 0,
+            pace: Instant::now(),
+            completed: 0,
+            failed: 0,
+            known_sizes: 0,
+            expected_bytes: Some(0),
+        }
+    }
+
+    fn reserve(
+        &mut self,
+        requested: u64,
+        transfer_limit: Option<u64>,
+        staging_limit: Option<u64>,
+        probe: bool,
+    ) -> Result<usize> {
+        let transfer = transfer_limit
+            .unwrap_or(u64::MAX)
+            .saturating_sub(self.transferred);
+        let staging = if probe {
+            u64::MAX
+        } else {
+            staging_limit
+                .unwrap_or(u64::MAX)
+                .saturating_sub(self.staged)
+        };
+        ensure!(
+            transfer > 0 && staging > 0,
+            "download byte limit reached; EOF not verified"
+        );
+        let allowance = requested
+            .min(transfer - self.reserved_transfer)
+            .min(if probe {
+                staging
+            } else {
+                staging - self.reserved_staging
+            });
+        self.reserved_transfer += allowance;
+        if !probe {
+            self.reserved_staging += allowance;
+        }
+        Ok(allowance as usize)
+    }
+
+    fn settle(&mut self, allowance: usize, read: u64, probe: bool) {
+        self.reserved_transfer -= allowance as u64;
+        self.transferred += read;
+        if !probe {
+            self.reserved_staging -= allowance as u64;
+            self.staged += read;
+        }
+    }
+
     fn record_size(&mut self, size: u64) {
         self.known_sizes += 1;
         self.expected_bytes = self.expected_bytes.and_then(|sum| sum.checked_add(size));
@@ -192,15 +252,7 @@ pub fn run(
     let staging_limit = config.max_staging_size;
     let file_limit = config.max_file_size;
     let speed = config.speed()?;
-    let budget = Mutex::new(Budget {
-        transferred: 0,
-        staged: staged_bytes(&payloads)?,
-        pace: Instant::now(),
-        completed: 0,
-        failed: 0,
-        known_sizes: 0,
-        expected_bytes: Some(0),
-    });
+    let budget = Mutex::new(Budget::new(staged_bytes(&payloads)?));
     ensure!(
         staging_limit.is_none_or(|limit| budget.lock().unwrap().staged <= limit),
         "staging size limit reached"
@@ -258,6 +310,7 @@ pub fn run(
         progress.0.set_position(cached as u64);
         progress.0.set_message(transfer_message(&budget));
     }
+    let reservation_released = Condvar::new();
     let results = Mutex::new(vec![]);
     rayon::ThreadPoolBuilder::new()
         .num_threads(config.concurrency)
@@ -267,7 +320,14 @@ pub fn run(
                 let result = (|| -> Result<Option<u64>> {
                     ensure!(!cancelled.load(Ordering::Relaxed), "interrupted");
                     let started = Instant::now();
-                    let timeout = config.timeout_seconds.map(Duration::from_secs);
+                    let deadline = config
+                        .timeout_seconds
+                        .map(|seconds| {
+                            started
+                                .checked_add(Duration::from_secs(seconds))
+                                .ok_or_else(|| anyhow::anyhow!("timeout too large"))
+                        })
+                        .transpose()?;
                     let relative = payload_path(config, candidate);
                     let target = config.staging_dir.join(&relative);
                     private_tree(target.parent().unwrap())?;
@@ -306,7 +366,7 @@ pub fn run(
                     let mut reader = crate::collection::http_source::CancellableReader::new(
                         response.into_body(),
                         cancelled,
-                        timeout.and_then(|timeout| started.checked_add(timeout)),
+                        deadline,
                     );
                     let mut buffer = [0u8; TRANSFER_BUFFER_BYTES];
                     let mut size = 0u64;
@@ -315,70 +375,67 @@ pub fn run(
                         if expected == Some(size) {
                             break;
                         }
-                        ensure!(!cancelled.load(Ordering::Relaxed), "interrupted");
-                        ensure!(
-                            timeout.is_none_or(|timeout| started.elapsed() < timeout),
-                            "transfer timeout"
-                        );
-                        // Serialize read reservations so concurrent transfers cannot overshoot aggregate budgets.
-                        let mut b = budget.lock().unwrap();
-                        let allowance = [
-                            (total_limit, b.transferred),
-                            (staging_limit, b.staged),
-                            (file_limit, size),
-                        ]
-                        .into_iter()
-                        .filter_map(|(limit, used)| limit.map(|limit| limit.saturating_sub(used)))
-                        .fold(buffer.len() as u64, u64::min)
-                            as usize;
-                        if allowance == 0
-                            && file_limit == Some(size)
-                            && total_limit.is_none_or(|limit| b.transferred < limit)
-                        {
-                            // Probe EOF without writing beyond the file cap; charge any observed byte.
-                            let n = reader.read(&mut buffer[..1])?;
-                            b.transferred = b
-                                .transferred
-                                .checked_add(n as u64)
-                                .ok_or_else(|| anyhow::anyhow!("transfer size overflow"))?;
+                        let probe = file_limit == Some(size);
+                        let requested = if probe {
+                            1
+                        } else {
+                            (buffer.len() as u64)
+                                .min(file_limit.map_or(u64::MAX, |limit| limit - size))
+                                .min(expected.map_or(u64::MAX, |length| length - size))
+                        };
+                        let allowance = {
+                            let mut b = budget.lock().unwrap();
+                            loop {
+                                ensure!(!cancelled.load(Ordering::Relaxed), "interrupted");
+                                ensure!(
+                                    deadline.is_none_or(|deadline| Instant::now() < deadline),
+                                    "transfer timeout"
+                                );
+                                let allowance =
+                                    b.reserve(requested, total_limit, staging_limit, probe)?;
+                                if allowance != 0 {
+                                    break allowance;
+                                }
+                                // Another reader may return unused allowance or reach EOF.
+                                b = reservation_released
+                                    .wait_timeout(b, Duration::from_millis(25))
+                                    .unwrap()
+                                    .0;
+                            }
+                        };
+                        let result = reader.read(&mut buffer[..allowance]);
+                        let ready = {
+                            let mut b = budget.lock().unwrap();
+                            b.settle(allowance, result.as_ref().map_or(0, |n| *n as u64), probe);
+                            reservation_released.notify_all();
+                            let n = *result.as_ref().unwrap_or(&0);
+                            progress.streaming_message(|| transfer_message(&b));
+                            speed.filter(|_| n != 0 && !probe).map(|rate| {
+                                b.pace = b.pace.max(Instant::now())
+                                    + Duration::from_secs_f64(n as f64 / rate as f64);
+                                b.pace
+                            })
+                        };
+                        let n = result?;
+                        if probe {
                             ensure!(n == 0, "file size limit reached");
-                            break;
                         }
-                        ensure!(
-                            allowance > 0,
-                            "download byte limit reached; EOF not verified"
-                        );
-                        let n = reader.read(&mut buffer[..allowance])?;
                         if n == 0 {
                             break;
                         }
-                        b.transferred = b
-                            .transferred
-                            .checked_add(n as u64)
-                            .ok_or_else(|| anyhow::anyhow!("transfer size overflow"))?;
-                        b.staged = b
-                            .staged
-                            .checked_add(n as u64)
-                            .ok_or_else(|| anyhow::anyhow!("staging size overflow"))?;
-                        if let Some(rate) = speed {
-                            b.pace = b.pace.max(Instant::now())
-                                + Duration::from_secs_f64(n as f64 / rate as f64);
+                        if let Some(ready) = ready {
                             wait_until(
-                                timeout.map_or(b.pace, |timeout| b.pace.min(started + timeout)),
+                                deadline.map_or(ready, |deadline| ready.min(deadline)),
                                 cancelled,
                             )?;
                         }
-                        progress.streaming_message(|| transfer_message(&b));
-                        drop(b);
-                        size = size
-                            .checked_add(n as u64)
-                            .ok_or_else(|| anyhow::anyhow!("file size overflow"))?;
+                        size += n as u64;
                         hash.update(&buffer[..n]);
                         file.write_all(&buffer[..n])?;
                     }
                     ensure!(!cancelled.load(Ordering::Relaxed), "interrupted");
                     ensure!(
-                        timeout.is_none_or(|timeout| started.elapsed() < timeout),
+                        deadline.is_none_or(|deadline| Instant::now() < deadline),
                         "transfer timeout"
                     );
                     ensure!(
@@ -449,8 +506,23 @@ fn transfer_progress(
 }
 
 #[cfg(test)]
-mod progress_tests {
+mod tests {
     use super::*;
+
+    #[test]
+    fn reservations_return_unused_bytes_and_keep_probes_out_of_staging() {
+        let mut budget = Budget::new(2);
+        assert_eq!(budget.reserve(8, Some(9), Some(10), false).unwrap(), 8);
+        assert_eq!(budget.reserve(8, Some(9), Some(10), false).unwrap(), 0);
+        budget.settle(8, 3, false);
+        assert_eq!(budget.reserve(8, Some(9), Some(10), false).unwrap(), 5);
+        budget.settle(5, 5, false);
+        assert!(budget.reserve(1, Some(9), Some(10), false).is_err());
+        assert_eq!(budget.reserve(1, Some(9), Some(10), true).unwrap(), 1);
+        budget.settle(1, 1, true);
+        assert_eq!((budget.transferred, budget.staged), (9, 10));
+        assert!(budget.reserve(1, Some(9), Some(10), true).is_err());
+    }
 
     #[test]
     fn transferred_bytes_have_measured_rate_and_use_known_totals() {

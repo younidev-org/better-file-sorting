@@ -14,7 +14,7 @@ const HASH_BUFFER_BYTES: usize = 64 * 1024;
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::File,
+    fs::{File, Metadata},
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
@@ -412,19 +412,55 @@ pub struct CompletedInput {
     pub path: PathBuf,
     pub receipt: DownloadReceipt,
 }
+
+/// A receipt digest tied to the file metadata observed during verification.
+#[derive(Debug, Clone)]
+pub struct VerifiedInput {
+    pub(crate) sha256: String,
+    pub(crate) metadata: Metadata,
+}
+
+impl VerifiedInput {
+    pub(crate) fn unchanged(&self, path: &Path) -> Result<bool> {
+        crate::ingest::discovery::check_path(path)?;
+        Ok(same_file(&self.metadata, &std::fs::symlink_metadata(path)?))
+    }
+}
+
+#[cfg(unix)]
+fn same_file(before: &Metadata, after: &Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    after.is_file()
+        && before.dev() == after.dev()
+        && before.ino() == after.ino()
+        && before.len() == after.len()
+        && (before.mtime(), before.mtime_nsec()) == (after.mtime(), after.mtime_nsec())
+        && (before.ctime(), before.ctime_nsec()) == (after.ctime(), after.ctime_nsec())
+}
+
+#[cfg(not(unix))]
+fn same_file(_: &Metadata, _: &Metadata) -> bool {
+    false
+}
 /// Resolve completed receipts to accessible inputs for ingestion.
 ///
 /// Receipt identities and paths must agree with the acquisition settings.
 /// Accessible payloads are checked against the recorded size and SHA-256.
 /// A sealed payload requires the user to grant access before ingestion.
 pub fn completed_inputs(config: &DownloadConfig) -> Result<Vec<CompletedInput>> {
-    completed_inputs_cancellable(config, &AtomicBool::new(false))
+    Ok(
+        completed_inputs_cancellable(config, &AtomicBool::new(false))?
+            .into_iter()
+            .map(|(input, _)| input)
+            .collect(),
+    )
 }
 
 pub(crate) fn completed_inputs_cancellable(
     config: &DownloadConfig,
     cancelled: &AtomicBool,
-) -> Result<Vec<CompletedInput>> {
+) -> Result<Vec<(CompletedInput, Metadata)>> {
     use crate::app::presentation::{Progress, byte_progress, byte_rate};
     use sha2::{Digest, Sha256};
 
@@ -432,7 +468,7 @@ pub(crate) fn completed_inputs_cancellable(
     let scanning = Progress::new(None, "Reading download receipts");
     let control = config.staging_dir.join("control");
     crate::ingest::discovery::check_path(&control)?;
-    let mut inputs = vec![];
+    let mut receipts = vec![];
     for entry in std::fs::read_dir(control)? {
         ensure!(!cancelled.load(Ordering::Relaxed), "interrupted");
         let entry = entry?;
@@ -452,17 +488,14 @@ pub(crate) fn completed_inputs_cancellable(
             receipt.path == crate::collection::download::payload_path(config, &receipt.candidate),
             "unsafe receipt path"
         );
-        inputs.push(CompletedInput {
-            path: config.staging_dir.join(&receipt.path),
-            receipt,
-        });
+        receipts.push(receipt);
     }
     drop(scanning);
-    ensure!(!inputs.is_empty(), "no completed downloads found");
-    let total = inputs
+    ensure!(!receipts.is_empty(), "no completed downloads found");
+    let total = receipts
         .iter()
-        .try_fold(0u64, |sum, input| sum.checked_add(input.receipt.size));
-    let progress = Progress::new(Some(inputs.len() as u64), "Verifying downloaded ZIPs");
+        .try_fold(0u64, |sum, receipt| sum.checked_add(receipt.size));
+    let progress = Progress::new(Some(receipts.len() as u64), "Verifying downloaded ZIPs");
     let message = |read| {
         format!(
             "{} ZIP bytes verified · {}",
@@ -474,12 +507,12 @@ pub(crate) fn completed_inputs_cancellable(
     progress.0.set_message(message(read));
     progress.0.force_draw();
     let mut buffer = [0; HASH_BUFFER_BYTES];
-    for input in &mut inputs {
+    let mut inputs = Vec::with_capacity(receipts.len());
+    for receipt in receipts {
         ensure!(!cancelled.load(Ordering::Relaxed), "interrupted");
-        let path = &input.path;
-        let receipt = &input.receipt;
+        let path = config.staging_dir.join(&receipt.path);
         if crate::repository::security::validate_file(
-            path,
+            &path,
             crate::app::config::SecurityMode::Sealed,
         )
         .is_ok()
@@ -489,14 +522,12 @@ pub(crate) fn completed_inputs_cancellable(
             );
         }
         crate::repository::security::validate_file(
-            path,
+            &path,
             crate::app::config::SecurityMode::Standard,
         )?;
-        let mut reader = File::open(path)?;
-        ensure!(
-            reader.metadata()?.len() == receipt.size,
-            "download size changed"
-        );
+        let mut reader = File::open(&path)?;
+        let metadata = reader.metadata()?;
+        ensure!(metadata.len() == receipt.size, "download size changed");
         let mut hash = Sha256::new();
         loop {
             ensure!(!cancelled.load(Ordering::Relaxed), "interrupted");
@@ -510,13 +541,24 @@ pub(crate) fn completed_inputs_cancellable(
         }
         let actual: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
         ensure!(actual == receipt.sha256, "download hash changed");
-        input.path = path.canonicalize()?;
+        #[cfg(unix)]
+        ensure!(
+            same_file(&metadata, &reader.metadata()?),
+            "download changed during verification"
+        );
+        inputs.push((
+            CompletedInput {
+                path: path.canonicalize()?,
+                receipt,
+            },
+            metadata,
+        ));
         progress.0.inc(1);
         progress.0.set_message(message(read));
     }
     progress.0.force_draw();
     drop(progress);
-    inputs.sort_by(|a, b| {
+    inputs.sort_by(|(a, _), (b, _)| {
         a.receipt
             .candidate
             .source_id

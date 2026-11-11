@@ -64,7 +64,8 @@ fn views(
         );
         private_directory(&root.join(name))?;
     }
-    for generation in super::catalog::read(repo.root())?.views()? {
+    let catalog = super::catalog::read(repo.root())?;
+    for generation in catalog.views()? {
         private_directory(&root.join(generation))?;
     }
     for entry in fs::read_dir(&root)? {
@@ -77,7 +78,6 @@ fn views(
         private_directory(&generation)?;
         let rules: crate::organization::rules::Rules =
             serde_json::from_reader(bounded_file(&generation.join("rules.json"), 1024 * 1024)?)?;
-        let catalog = super::catalog::read(repo.root())?;
         for view in catalog.view_plan(&entry.file_name().to_string_lossy())? {
             let path = Path::new(&view.path);
             ensure!(
@@ -172,7 +172,7 @@ pub fn run(root: &Path, full: bool, cancelled: &AtomicBool) -> Result<Report> {
             ));
         }
     }
-    let references = match super::cleanup::audit_metadata(&repo) {
+    let references = match super::cleanup::audit_metadata(&repo, &identities) {
         Ok(references) => references,
         Err(error) => {
             let message = error.to_string();

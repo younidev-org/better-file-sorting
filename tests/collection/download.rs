@@ -160,7 +160,7 @@ fn downloaded_zip_flows_through_existing_ingest() {
     let payload = config
         .staging_dir
         .join(download::payload_path(&config, &report.candidates[0]));
-    std::fs::set_permissions(payload, std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::fs::set_permissions(&payload, std::fs::Permissions::from_mode(0o600)).unwrap();
     let config_path = root.path().join("collection.toml");
     std::fs::write(
         &config_path,
@@ -189,6 +189,34 @@ fn downloaded_zip_flows_through_existing_ingest() {
     assert_eq!(result.accepted, 1);
     assert_eq!(result.failures, 0);
     assert!(root.path().join("sorted.zip").is_file());
+
+    let mut resume = ingest;
+    resume.zip = false;
+    resume.resume = true;
+    resume.input_mode = bfsort::app::config::InputMode::Archives;
+    resume.output = root.path().join("repository");
+    let cancelled = AtomicBool::new(false);
+    assert_eq!(
+        bfsort::ingest::pipeline::ingest(&resume, &cancelled)
+            .unwrap()
+            .accepted,
+        1
+    );
+    let unchanged = bfsort::ingest::pipeline::ingest(&resume, &cancelled).unwrap();
+    assert_eq!(unchanged.reused_occurrences, 1);
+    let original_size = std::fs::metadata(&payload).unwrap().len();
+    crate::common::archive(&payload, &[("hello.txt", b"hello again")]);
+    assert_eq!(std::fs::metadata(&payload).unwrap().len(), original_size);
+    let result = bfsort::ingest::pipeline::ingest(&resume, &cancelled).unwrap();
+    assert_eq!(result.accepted, 0);
+    assert_eq!(result.reused_occurrences, 0);
+    assert!(
+        result
+            .first_failure
+            .unwrap()
+            .error
+            .contains("download hash changed")
+    );
 }
 
 #[test]
@@ -421,4 +449,100 @@ fn unlimited_transfer_cancels_while_response_body_stalls() {
             .count(),
         0
     );
+}
+
+#[test]
+fn stalled_body_does_not_hold_the_download_budget_lock() {
+    use std::{
+        io::{BufRead, BufReader, Write},
+        net::TcpListener,
+        sync::atomic::AtomicBool,
+        time::{Duration, Instant},
+    };
+
+    let root = tempfile::tempdir().unwrap();
+    let server = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", server.local_addr().unwrap());
+    let config = DownloadConfig {
+        staging_dir: root.path().join("downloads"),
+        concurrency: 2,
+        timeout_seconds: Some(5),
+        max_total_size: Some(12),
+        max_staging_size: Some(12),
+        ..Default::default()
+    };
+    let candidates: Vec<_> = ["slow.zip", "fast.zip"]
+        .into_iter()
+        .map(|name| {
+            let url = format!("{base}/{name}");
+            Candidate {
+                source_id: bfsort::repository::metadata::digest(url.as_bytes()),
+                url,
+                name: name.into(),
+            }
+        })
+        .collect();
+    let receipt = config
+        .staging_dir
+        .join("control")
+        .join(format!("{}.json", candidates[1].source_id));
+
+    let server = std::thread::spawn(move || {
+        let mut slow = None;
+        let mut fast = None;
+        for _ in 0..2 {
+            let (stream, _) = server.accept().unwrap();
+            let mut stream = BufReader::new(stream);
+            let mut request = String::new();
+            stream.read_line(&mut request).unwrap();
+            let mut header = String::new();
+            loop {
+                header.clear();
+                assert_ne!(stream.read_line(&mut header).unwrap(), 0);
+                if header == "\r\n" {
+                    break;
+                }
+            }
+            let stream = stream.into_inner();
+            if request.starts_with("GET /slow.zip ") {
+                slow = Some(stream);
+            } else {
+                assert!(request.starts_with("GET /fast.zip "));
+                fast = Some(stream);
+            }
+        }
+        let mut slow = slow.unwrap();
+        slow.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        fast.unwrap()
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nfast")
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !receipt.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let completed_before_release = receipt.is_file();
+        slow.write_all(b"slowbody").unwrap();
+        completed_before_release
+    });
+    let report = download::run(
+        &config,
+        &SourceConfig {
+            page: base,
+            ..Default::default()
+        },
+        &Inventory {
+            version: 2,
+            candidates,
+        },
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert!(
+        server.join().unwrap(),
+        "fast transfer waited for the stalled body"
+    );
+    assert_eq!(report.downloaded, 2, "{:?}", report.errors);
+    assert_eq!(report.bytes, 12);
 }

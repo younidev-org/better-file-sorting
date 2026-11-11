@@ -105,6 +105,10 @@ pub struct Config {
     /// Resolved receipt provenance indexed by canonical local input path.
     pub remote_inputs:
         std::collections::BTreeMap<PathBuf, crate::collection::acquisition::Candidate>,
+    /// Receipt digests verified during configuration, indexed by canonical local input path.
+    #[serde(skip)]
+    pub verified_inputs:
+        std::collections::BTreeMap<PathBuf, crate::collection::acquisition::VerifiedInput>,
     pub source: Option<crate::collection::acquisition::SourceConfig>,
     pub download: Option<crate::collection::acquisition::DownloadConfig>,
     pub input_mode: InputMode,
@@ -135,6 +139,7 @@ impl Default for Config {
             compression_level: None,
             export_naming: Default::default(),
             remote_inputs: Default::default(),
+            verified_inputs: Default::default(),
             source: None,
             download: None,
             input_mode: InputMode::Files,
@@ -259,9 +264,16 @@ impl Config {
         if c.inputs.is_empty()
             && let Some(download) = &c.download
         {
-            for input in
+            for (input, metadata) in
                 crate::collection::acquisition::completed_inputs_cancellable(download, cancelled)?
             {
+                c.verified_inputs.insert(
+                    input.path.clone(),
+                    crate::collection::acquisition::VerifiedInput {
+                        sha256: input.receipt.sha256,
+                        metadata,
+                    },
+                );
                 c.remote_inputs
                     .insert(input.path.clone(), input.receipt.candidate);
                 c.inputs.push(input.path);
