@@ -25,7 +25,7 @@ use anyhow::{Context, Result, ensure};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::io::Read;
+use std::io::{BufReader, Read};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::File,
@@ -863,10 +863,11 @@ fn checkpoint_reusable(
         return Ok(None);
     }
     security::validate_file(path, SecurityMode::Standard)?;
-    let checkpoint: IngestCheckpoint = match serde_json::from_reader(File::open(path)?) {
-        Ok(value) => value,
-        Err(_) => return Ok(None),
-    };
+    let checkpoint: IngestCheckpoint =
+        match serde_json::from_reader(BufReader::new(File::open(path)?)) {
+            Ok(value) => value,
+            Err(_) => return Ok(None),
+        };
     ensure!(
         checkpoint.schema_version == 1,
         "unsupported ingestion checkpoint version; use a fresh repository"

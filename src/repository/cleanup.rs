@@ -35,13 +35,18 @@ struct Journal {
     schema_version: u32,
     hashes: BTreeSet<String>,
 }
-fn read_json(path: &Path) -> Result<serde_json::Value> {
+const SMALL_METADATA_LIMIT: u64 = 16 * 1024 * 1024;
+
+fn read_json(path: &Path, limit: Option<u64>) -> Result<serde_json::Value> {
     security::validate_file(path, SecurityMode::Standard)?;
-    ensure!(
-        fs::metadata(path)?.len() <= 16 * 1024 * 1024,
-        "cleanup metadata exceeds 16 MiB"
-    );
-    Ok(serde_json::from_reader(fs::File::open(path)?)?)
+    let file = fs::File::open(path)?;
+    if let Some(limit) = limit {
+        ensure!(
+            file.metadata()?.len() <= limit,
+            "cleanup metadata exceeds {limit} bytes"
+        );
+    }
+    Ok(serde_json::from_reader(BufReader::new(file))?)
 }
 pub fn removed(root: &Path) -> Result<BTreeSet<String>> {
     super::catalog::read(root)?.removed()
@@ -209,36 +214,7 @@ fn collect_hashes(value: &serde_json::Value, pins: &mut BTreeSet<String>) {
     }
 }
 pub(crate) fn audit_metadata(repo: &Repository) -> Result<std::collections::BTreeMap<String, u64>> {
-    let retained_hashes = validated_pins(repo)?;
-    let mut objects = std::collections::BTreeMap::new();
-    for category in ["ingest", "extraction"] {
-        let directory = repo.root().join("operations").join(category);
-        if !directory.try_exists()? {
-            continue;
-        }
-        for entry in fs::read_dir(directory)? {
-            let value = read_json(&entry?.path())?;
-            let rows = value[if category == "ingest" {
-                "records"
-            } else {
-                "children"
-            }]
-            .as_array()
-            .ok_or_else(|| anyhow::anyhow!("invalid object reference list"))?;
-            for row in rows {
-                let hash = row["sha256"]
-                    .as_str()
-                    .filter(|h| valid_hash(h))
-                    .ok_or_else(|| anyhow::anyhow!("invalid object reference hash"))?;
-                let size = row["size"]
-                    .as_u64()
-                    .ok_or_else(|| anyhow::anyhow!("invalid object reference size"))?;
-                if let Some(old) = objects.insert(hash.to_owned(), size) {
-                    ensure!(old == size, "conflicting receipt object sizes");
-                }
-            }
-        }
-    }
+    let (retained_hashes, mut objects) = retained_references(repo)?;
     let records = metadata::load_all(repo.root())?;
     let identities: std::collections::BTreeMap<_, _> = records
         .iter()
@@ -262,7 +238,8 @@ pub(crate) fn audit_metadata(repo: &Repository) -> Result<std::collections::BTre
     }
     Ok(objects)
 }
-fn validated_pins(repo: &Repository) -> Result<BTreeSet<String>> {
+fn retained_references(repo: &Repository) -> Result<(BTreeSet<String>, BTreeMap<String, u64>)> {
+    let mut objects = BTreeMap::new();
     let mut pins = super::catalog::read(repo.root())?.referenced_hashes()?;
     // Unknown recovery schemas stop reclamation rather than guessing their references.
     let operations = repo.root().join("operations");
@@ -301,7 +278,7 @@ fn validated_pins(repo: &Repository) -> Result<BTreeSet<String>> {
                     security::validate_file(entry.path(), SecurityMode::Standard)?;
                     continue;
                 }
-                let value = read_json(entry.path())?;
+                let value = read_json(entry.path(), Some(SMALL_METADATA_LIMIT))?;
                 let record: crate::operations::Record = serde_json::from_value(value.clone())?;
                 ensure!(
                     record.schema_version == 1,
@@ -315,8 +292,10 @@ fn validated_pins(repo: &Repository) -> Result<BTreeSet<String>> {
                     && entry.path().extension().is_some_and(|e| e == "json"),
                 "unknown operation metadata prevents prune"
             );
-            let value = read_json(entry.path())?;
             let category = relative.parent().and_then(Path::to_str).unwrap_or("");
+            // Ingest checkpoints store a record per occurrence and scale with the archive.
+            let limit = (category != "ingest").then_some(SMALL_METADATA_LIMIT);
+            let value = read_json(entry.path(), limit)?;
             let fields: &[&str] = match category {
                 "ingest" => &["schema_version", "input_hash", "fingerprint", "records"],
                 "extraction" => &[
@@ -369,11 +348,30 @@ fn validated_pins(repo: &Repository) -> Result<BTreeSet<String>> {
             if category == "extraction" {
                 validate_extraction(&value)?;
             }
-            if category == "ingest" {
-                let rows: Vec<metadata::Occurrence> =
-                    serde_json::from_value(value["records"].clone())?;
+            if matches!(category, "ingest" | "extraction") {
+                let field = if category == "ingest" {
+                    "records"
+                } else {
+                    "children"
+                };
+                let rows = value[field]
+                    .as_array()
+                    .ok_or_else(|| anyhow::anyhow!("invalid object reference list"))?;
                 for row in rows {
-                    row.validate()?;
+                    if category == "ingest" {
+                        let record: metadata::Occurrence = serde_json::from_value(row.clone())?;
+                        record.validate()?;
+                    }
+                    let hash = row["sha256"]
+                        .as_str()
+                        .filter(|h| valid_hash(h))
+                        .ok_or_else(|| anyhow::anyhow!("invalid object reference hash"))?;
+                    let size = row["size"]
+                        .as_u64()
+                        .ok_or_else(|| anyhow::anyhow!("invalid object reference size"))?;
+                    if let Some(old) = objects.insert(hash.to_owned(), size) {
+                        ensure!(old == size, "conflicting receipt object sizes");
+                    }
                 }
             }
             collect_hashes(&value, &mut pins);
@@ -414,7 +412,7 @@ fn validated_pins(repo: &Repository) -> Result<BTreeSet<String>> {
         } else if relative.parent() == Some(Path::new("reclassification"))
             && entry.file_type().is_file()
         {
-            let value = read_json(entry.path())?;
+            let value = read_json(entry.path(), Some(SMALL_METADATA_LIMIT))?;
             let _: crate::detection::classifier::Detection = serde_json::from_value(value.clone())?;
             let name = entry.file_name().to_string_lossy();
             let hash = name
@@ -435,7 +433,8 @@ fn validated_pins(repo: &Repository) -> Result<BTreeSet<String>> {
                     })
             })
         {
-            let value = read_json(entry.path())?;
+            // Run reports can grow with the number of outcomes and summary groups.
+            let value = read_json(entry.path(), None)?;
             let fields = [
                 "run_id",
                 "accepted",
@@ -482,7 +481,7 @@ fn validated_pins(repo: &Repository) -> Result<BTreeSet<String>> {
         match name.as_ref() {
             "rules.json" => {
                 let _: crate::organization::rules::Rules =
-                    serde_json::from_value(read_json(entry.path())?)?;
+                    serde_json::from_value(read_json(entry.path(), Some(SMALL_METADATA_LIMIT))?)?;
             }
             "CURRENT" => {
                 security::validate_file(entry.path(), SecurityMode::Standard)?;
@@ -510,7 +509,7 @@ fn validated_pins(repo: &Repository) -> Result<BTreeSet<String>> {
             }
         }
     }
-    Ok(pins)
+    Ok((pins, objects))
 }
 pub fn prune(root: &Path, dry_run: bool, confirm: bool) -> Result<Report> {
     ensure!(dry_run || confirm, "prune requires --confirm");
@@ -522,12 +521,13 @@ pub fn prune(root: &Path, dry_run: bool, confirm: bool) -> Result<Report> {
             .any(|r| r.state == "running"),
         "active operations prevent cleanup"
     );
-    let pins = validated_pins(&repo)?;
+    let (pins, _) = retained_references(&repo)?;
     let operations = repo.root().join("operations");
     let journal_path = operations.join("prune.json");
     check_path(&journal_path)?;
     if journal_path.try_exists()? {
-        let previous: Journal = serde_json::from_value(read_json(&journal_path)?)?;
+        let previous: Journal =
+            serde_json::from_value(read_json(&journal_path, Some(SMALL_METADATA_LIMIT))?)?;
         ensure!(
             previous.schema_version == 1 && previous.hashes.iter().all(|h| valid_hash(h)),
             "invalid prune journal"

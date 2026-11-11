@@ -231,3 +231,50 @@ fn unsupported_checkpoint_version_fails_without_replacing_it() {
     assert_eq!(report.failures, 1);
     assert_eq!(std::fs::read(path).unwrap(), bytes);
 }
+
+#[test]
+fn large_ingest_checkpoint_and_report_remain_usable() {
+    use bfsort::repository::{cleanup, verify};
+
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("large-metadata.zip");
+    let long_extension = "x".repeat(60_000);
+    // Distinct extensions make the report grow alongside the checkpoint's occurrence list.
+    let names: Vec<_> = (0..150)
+        .map(|index| format!("sample.{index}{long_extension}"))
+        .collect();
+    let entries: Vec<_> = names
+        .iter()
+        .map(|name| (name.as_str(), &b"hello"[..]))
+        .collect();
+    common::archive(&input, &entries);
+    let mut config = config(&input, &dir.path().join("repo"));
+    config.resume = true;
+    let cancelled = AtomicBool::new(false);
+    let report = pipeline::ingest(&config, &cancelled).unwrap();
+    assert_eq!(report.accepted, names.len());
+    assert_eq!(report.failures, 0);
+    let checkpoint = std::fs::read_dir(config.output.join("operations/ingest"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap();
+    assert!(checkpoint.metadata().unwrap().len() > 16 * 1024 * 1024);
+    let report_path = config
+        .output
+        .join("reports")
+        .join(format!("{}.json", report.run_id));
+    assert!(report_path.metadata().unwrap().len() > 16 * 1024 * 1024);
+
+    let verified = verify::run(&config.output, true, &cancelled).unwrap();
+    assert!(verified.failures.is_empty(), "{:?}", verified.failures);
+    assert_eq!(verified.verified, 1);
+    assert_eq!(
+        cleanup::prune(&config.output, true, false)
+            .unwrap()
+            .candidate_objects,
+        0
+    );
+    let resumed = pipeline::ingest(&config, &cancelled).unwrap();
+    assert_eq!(resumed.reused_occurrences, names.len());
+}
