@@ -1,3 +1,8 @@
+//! Built-in layouts, ZIP export naming, and publication recovery tests.
+//!
+//! Check compact export reports and recovery after interruption or tampering.
+//! Exercise automatic grouping, payload suffix selection, and mismatch report formats.
+
 use crate::common;
 use bfsort::organization::rules::{Preset, Rules};
 #[test]

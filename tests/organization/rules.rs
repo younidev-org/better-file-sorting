@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (c) 2026 Younidev. See LICENSE for license terms.
 
-//! Integration checks for rules tests.
-//! Exercises public BFS behavior with disposable fixtures; failures should identify
-//! contract regressions without changing user repositories.
+//! Rule matching, Unicode normalization, path collision handling, and export naming.
 
 use bfsort::{organization::rules::Rules, repository::metadata::Occurrence};
 /// Build a deterministic occurrence fixture for rules tests.

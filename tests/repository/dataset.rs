@@ -1,3 +1,8 @@
+//! Dataset sampling, splitting, and resume tests.
+//!
+//! Check seeded allocation, structural ancestry closure, verified reuse of copied
+//! objects, and rejection of changed source snapshots.
+
 #![cfg(unix)]
 use bfsort::{
     app::config::SecurityMode,

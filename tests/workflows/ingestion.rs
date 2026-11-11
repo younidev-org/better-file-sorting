@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (c) 2026 Younidev. See LICENSE for license terms.
 
-//! Integration checks for integration tests.
-//! Exercises public BFS behavior with disposable fixtures; failures should identify
-//! contract regressions without changing user repositories.
+//! CLI ingestion and view publication, including sealed repositories and read-only previews.
 
 #![cfg(unix)]
 use crate::common;

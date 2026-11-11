@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (c) 2026 Younidev. See LICENSE for license terms.
 
-//! Integration checks for acquisition tests.
-//! Exercises public BFS behavior with disposable fixtures; failures should identify
-//! contract regressions without changing user repositories.
+//! Download policy selection, byte settings, inventory defaults, and staging validation.
 
 use bfsort::collection::acquisition::parse_bytes;
 

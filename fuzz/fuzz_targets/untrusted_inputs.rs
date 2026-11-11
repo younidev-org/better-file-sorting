@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (c) 2026 Younidev. See LICENSE for license terms.
 
-//! Untrusted inputs harness for BFS.
-//! Uses synthetic inputs to exercise the library independently of normal CLI usage.
-//! Keep harness work isolated from user payloads and production repositories.
+//! Exercises classification, rule parsing, archive names, and report serialization with bounded fuzz inputs.
 
 #![no_main]
 use libfuzzer_sys::fuzz_target;

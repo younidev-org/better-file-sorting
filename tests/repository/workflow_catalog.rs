@@ -1,3 +1,8 @@
+//! SQLite persistence for input outcomes and retained view plans.
+//!
+//! Verify that older supported schemas stay unchanged during reads and upgrade
+//! atomically on the first write.
+
 use bfsort::{
     app::config::SecurityMode,
     operations::InputOutcome,

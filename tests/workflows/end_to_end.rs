@@ -1,3 +1,8 @@
+//! Command-line workflows using temporary repositories and loopback HTTP fixtures.
+//!
+//! Cover discovery, cached and cancelled transfers, default input modes, and
+//! machine-readable output across commands.
+
 use std::{
     io::{Read, Write},
     net::TcpListener,

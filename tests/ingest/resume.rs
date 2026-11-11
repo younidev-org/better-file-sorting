@@ -1,3 +1,9 @@
+//! Ingestion checkpoint and resume tests.
+//!
+//! Check reuse of unchanged inputs, reprocessing after failures or policy changes,
+//! and validation of canonical objects. Cover read-only previews and reports and
+//! checkpoints large enough to exercise repository verification and prune.
+
 #![cfg(unix)]
 use crate::common;
 use bfsort::{

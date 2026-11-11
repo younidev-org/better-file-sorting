@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (c) 2026 Younidev. See LICENSE for license terms.
 
-//! Integration checks for archive tests.
-//! Exercises public BFS behavior with disposable fixtures; failures should identify
-//! contract regressions without changing user repositories.
+//! ZIP inspection and archive discovery, including corrupt inputs and symlink exclusion.
 
 use std::{fs::File, io::Write, process::Command};
 use zip::{ZipWriter, write::SimpleFileOptions};

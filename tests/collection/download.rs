@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (c) 2026 Younidev. See LICENSE for license terms.
 
-//! Integration checks for download tests.
-//! Exercises public BFS behavior with disposable fixtures; failures should identify
-//! contract regressions without changing user repositories.
+//! Download publication, budgets, and cancellation tests.
+//!
+//! Loopback HTTP fixtures exercise sealed payloads, receipts, cache reuse, and
+//! concurrent transfers. Ingest tests verify that changed downloads cannot reuse a
+//! saved checkpoint.
 
 use bfsort::{collection::acquisition::*, collection::download};
 #[test]

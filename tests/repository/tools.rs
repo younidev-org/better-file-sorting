@@ -1,3 +1,8 @@
+//! Repository verification and comparison tests.
+//!
+//! Exercise unique-object checks, retained view validation, and sealed access.
+//! Compare effective detection and occurrence counts across repositories.
+
 #![cfg(unix)]
 use bfsort::{
     app::config::SecurityMode,

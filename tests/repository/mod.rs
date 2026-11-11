@@ -1,3 +1,5 @@
+//! Catalog, object storage, verification, cleanup, and dataset workflow tests.
+
 mod platform;
 mod security;
 mod storage;

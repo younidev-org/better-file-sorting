@@ -1,3 +1,9 @@
+//! Independent repository derivation and publication tests.
+//!
+//! Verify that sample, split, and merge preserve identities and create independent
+//! storage. Check failures for overlapping paths, corrupt objects, and conflicting
+//! metadata before the destination is published.
+
 #![cfg(unix)]
 use bfsort::{
     app::config::SecurityMode,

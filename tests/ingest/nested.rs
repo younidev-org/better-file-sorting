@@ -1,3 +1,9 @@
+//! Recursive archive extraction and analysis tests.
+//!
+//! Check parent-child provenance, depth and tree budgets, and reuse of completed
+//! branches. Exercise sealed objects, concurrent roots, and structural ancestors
+//! retained by filtered selections.
+
 use crate::common::{archive, run};
 use std::fs;
 

@@ -1,3 +1,8 @@
+//! End-to-end retry and cleanup safety tests.
+//!
+//! Check that retry selects only recorded failed inputs and that nested ancestry
+//! survives removal and reclamation.
+
 use crate::common;
 use std::{ffi::OsStr, fs};
 

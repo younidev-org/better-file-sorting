@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (c) 2026 Younidev. See LICENSE for license terms.
 
-//! Throughput harness for BFS.
-//! Uses synthetic inputs to exercise the library independently of normal CLI usage.
-//! Keep harness work isolated from user payloads and production repositories.
+//! Benchmarks ingestion, resume, and view publication with disposable synthetic archives.
 
 use bfsort::{
     app::config::{Config, Security, SecurityMode},

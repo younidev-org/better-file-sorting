@@ -1,3 +1,8 @@
+//! Shared selector behavior across ingestion and repository commands.
+//!
+//! Exercise CLI and configuration precedence, occurrence counts, retry, and
+//! removal. Check that filtered operations retain references outside the selection.
+
 use crate::common::run;
 use std::fs;
 

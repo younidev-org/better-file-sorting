@@ -1,3 +1,8 @@
+//! Logical removal and physical reclamation tests.
+//!
+//! Check confirmation and dry-run behavior, object references held by retained views
+//! and recovery records, and conservative refusal of unsupported metadata.
+
 #![cfg(unix)]
 use bfsort::{
     app::config::SecurityMode,

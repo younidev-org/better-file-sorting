@@ -1,3 +1,9 @@
+//! SQLite catalog constraints and transaction tests.
+//!
+//! Exercise private catalog access, indexed selection, ancestry, tombstones,
+//! retained views, and operation records. Corruption and conflict cases must fail
+//! without partially committing a batch.
+
 #![cfg(unix)]
 use bfsort::{
     app::config::SecurityMode,

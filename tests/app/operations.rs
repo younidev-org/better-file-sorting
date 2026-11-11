@@ -1,3 +1,9 @@
+//! Operation history and retry tests.
+//!
+//! Check lifecycle transitions, interrupted-run detection, and input selection on
+//! retry. Verify that repository history uses SQLite and that saved commands
+//! exclude secrets and reject changed settings.
+
 use bfsort::{
     app::config::SecurityMode,
     operations::{self, Guard},

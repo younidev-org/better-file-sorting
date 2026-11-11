@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (c) 2026 Younidev. See LICENSE for license terms.
 
-//! Integration checks for http source tests.
-//! Exercises public BFS behavior with disposable fixtures; failures should identify
-//! contract regressions without changing user repositories.
+//! HTTP discovery, URL handling, redirect budgets, rate limits, and inventory ordering.
 
 use bfsort::{collection::acquisition::SourceConfig, collection::http_source::parse_links};
 #[test]

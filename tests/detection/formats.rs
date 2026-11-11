@@ -1,3 +1,9 @@
+//! File signatures, bounded structural detection, and extension mismatch tests.
+//!
+//! Synthetic headers and archives exercise classification and ambiguity without
+//! running payloads. Repository tests cover how stored classifications feed
+//! reclassification, grouping, reports, and exports.
+
 use crate::common;
 use bfsort::detection::classifier;
 
