@@ -1,6 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (c) 2026 Younidev. See LICENSE for license terms.
-
 //! ZIP directory selection, output layout, and atomic publication under path conflicts.
 
 #![cfg(unix)]

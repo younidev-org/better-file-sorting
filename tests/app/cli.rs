@@ -1,6 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (c) 2026 Younidev. See LICENSE for license terms.
-
 //! Command-line contracts for help, defaults, diagnostics, and machine-readable output.
 
 use std::process::Command;

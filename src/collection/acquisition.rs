@@ -1,6 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (c) 2026 Younidev. See LICENSE for license terms.
-
 //! Defines the acquisition configuration, policy selection, and durable transfer inventory.
 //! Discovery records candidates in the inventory. Downloads publish completion
 //! receipts that ingestion uses to identify and verify accessible inputs.
@@ -427,30 +424,53 @@ impl VerifiedInput {
     }
 }
 
-#[cfg(unix)]
+#[derive(Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct FileStamp {
+    device: u64,
+    inode: u64,
+    size: u64,
+    modified: (i64, i64),
+    changed: (i64, i64),
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CachedVerification {
+    sha256: String,
+    stamp: FileStamp,
+}
+
 fn same_file(before: &Metadata, after: &Metadata) -> bool {
+    file_stamp(before).is_some_and(|stamp| Some(stamp) == file_stamp(after))
+}
+
+#[cfg(unix)]
+fn file_stamp(metadata: &Metadata) -> Option<FileStamp> {
     use std::os::unix::fs::MetadataExt;
 
-    after.is_file()
-        && before.dev() == after.dev()
-        && before.ino() == after.ino()
-        && before.len() == after.len()
-        && (before.mtime(), before.mtime_nsec()) == (after.mtime(), after.mtime_nsec())
-        && (before.ctime(), before.ctime_nsec()) == (after.ctime(), after.ctime_nsec())
+    metadata.is_file().then(|| FileStamp {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        size: metadata.len(),
+        modified: (metadata.mtime(), metadata.mtime_nsec()),
+        changed: (metadata.ctime(), metadata.ctime_nsec()),
+    })
 }
 
 #[cfg(not(unix))]
-fn same_file(_: &Metadata, _: &Metadata) -> bool {
-    false
+fn file_stamp(_: &Metadata) -> Option<FileStamp> {
+    None
 }
+
 /// Resolve completed receipts to accessible inputs for ingestion.
 ///
 /// Receipt identities and paths must agree with the acquisition settings.
-/// Accessible payloads are checked against the recorded size and SHA-256.
+/// Accessible payloads are checked against the receipt or a matching verified file stamp.
 /// A sealed payload requires the user to grant access before ingestion.
 pub fn completed_inputs(config: &DownloadConfig) -> Result<Vec<CompletedInput>> {
     Ok(
-        completed_inputs_cancellable(config, &AtomicBool::new(false))?
+        completed_inputs_cancellable(config, &AtomicBool::new(false), false)?
             .into_iter()
             .map(|(input, _)| input)
             .collect(),
@@ -460,16 +480,24 @@ pub fn completed_inputs(config: &DownloadConfig) -> Result<Vec<CompletedInput>> 
 pub(crate) fn completed_inputs_cancellable(
     config: &DownloadConfig,
     cancelled: &AtomicBool,
+    write_cache: bool,
 ) -> Result<Vec<(CompletedInput, Metadata)>> {
-    use crate::app::presentation::{Progress, byte_progress, byte_rate};
+    use crate::{
+        app::{
+            config::SecurityMode,
+            presentation::{Progress, byte_progress, byte_rate},
+        },
+        repository::security,
+    };
     use sha2::{Digest, Sha256};
 
     config.validate()?;
     let scanning = Progress::new(None, "Reading download receipts");
     let control = config.staging_dir.join("control");
     crate::ingest::discovery::check_path(&control)?;
-    let mut receipts = vec![];
-    for entry in std::fs::read_dir(control)? {
+    let mut pending = vec![];
+    let mut inputs = vec![];
+    for entry in std::fs::read_dir(&control)? {
         ensure!(!cancelled.load(Ordering::Relaxed), "interrupted");
         let entry = entry?;
         if entry.path().extension().is_none_or(|e| e != "json") {
@@ -488,76 +516,95 @@ pub(crate) fn completed_inputs_cancellable(
             receipt.path == crate::collection::download::payload_path(config, &receipt.candidate),
             "unsafe receipt path"
         );
-        receipts.push(receipt);
+        let path = config.staging_dir.join(&receipt.path);
+        ensure!(
+            security::validate_file(&path, SecurityMode::Sealed).is_err(),
+            "download is sealed; explicitly unlock selected payloads to 0600 before ingest"
+        );
+        security::validate_file(&path, SecurityMode::Standard)?;
+        let metadata = std::fs::symlink_metadata(&path)?;
+        ensure!(metadata.len() == receipt.size, "download size changed");
+        let cache = control.join(format!("{}.verified", receipt.candidate.source_id));
+        let cached = file_stamp(&metadata).is_some_and(|stamp| {
+            load_json::<CachedVerification>(&cache)
+                .is_ok_and(|saved| saved.stamp == stamp && saved.sha256 == receipt.sha256)
+        });
+        let input = CompletedInput {
+            path: path.canonicalize()?,
+            receipt,
+        };
+        if cached {
+            inputs.push((input, metadata));
+        } else {
+            pending.push((input, cache));
+        }
     }
     drop(scanning);
-    ensure!(!receipts.is_empty(), "no completed downloads found");
-    let total = receipts
-        .iter()
-        .try_fold(0u64, |sum, receipt| sum.checked_add(receipt.size));
-    let progress = Progress::new(Some(receipts.len() as u64), "Verifying downloaded ZIPs");
-    let message = |read| {
-        format!(
-            "{} ZIP bytes verified · {}",
-            byte_progress(read, total),
-            byte_rate(read, progress.0.elapsed())
-        )
-    };
-    let mut read = 0u64;
-    progress.0.set_message(message(read));
-    progress.0.force_draw();
-    let mut buffer = [0; HASH_BUFFER_BYTES];
-    let mut inputs = Vec::with_capacity(receipts.len());
-    for receipt in receipts {
-        ensure!(!cancelled.load(Ordering::Relaxed), "interrupted");
-        let path = config.staging_dir.join(&receipt.path);
-        if crate::repository::security::validate_file(
-            &path,
-            crate::app::config::SecurityMode::Sealed,
-        )
-        .is_ok()
-        {
-            anyhow::bail!(
-                "download is sealed; explicitly unlock selected payloads to 0600 before ingest"
-            );
-        }
-        crate::repository::security::validate_file(
-            &path,
-            crate::app::config::SecurityMode::Standard,
-        )?;
-        let mut reader = File::open(&path)?;
-        let metadata = reader.metadata()?;
-        ensure!(metadata.len() == receipt.size, "download size changed");
-        let mut hash = Sha256::new();
-        loop {
-            ensure!(!cancelled.load(Ordering::Relaxed), "interrupted");
-            let n = reader.read(&mut buffer)?;
-            if n == 0 {
-                break;
-            }
-            hash.update(&buffer[..n]);
-            read = read.saturating_add(n as u64);
-            progress.streaming_message(|| message(read));
-        }
-        let actual: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
-        ensure!(actual == receipt.sha256, "download hash changed");
-        #[cfg(unix)]
-        ensure!(
-            same_file(&metadata, &reader.metadata()?),
-            "download changed during verification"
-        );
-        inputs.push((
-            CompletedInput {
-                path: path.canonicalize()?,
-                receipt,
-            },
-            metadata,
-        ));
-        progress.0.inc(1);
+    ensure!(
+        !inputs.is_empty() || !pending.is_empty(),
+        "no completed downloads found"
+    );
+    if !pending.is_empty() {
+        let total = pending
+            .iter()
+            .try_fold(0u64, |sum, (input, _)| sum.checked_add(input.receipt.size));
+        let progress = Progress::new(Some(pending.len() as u64), "Verifying downloaded ZIPs");
+        let cached = inputs.len();
+        let message = |read| {
+            format!(
+                "{} ZIP bytes verified · {} · {cached} cached",
+                byte_progress(read, total),
+                byte_rate(read, progress.0.elapsed())
+            )
+        };
+        let mut read = 0u64;
         progress.0.set_message(message(read));
+        progress.0.force_draw();
+        let mut buffer = [0; HASH_BUFFER_BYTES];
+        for (input, cache) in pending {
+            ensure!(!cancelled.load(Ordering::Relaxed), "interrupted");
+            security::validate_file(&input.path, SecurityMode::Standard)?;
+            let mut reader = File::open(&input.path)?;
+            let metadata = reader.metadata()?;
+            ensure!(
+                metadata.len() == input.receipt.size,
+                "download size changed"
+            );
+            let mut hash = Sha256::new();
+            loop {
+                ensure!(!cancelled.load(Ordering::Relaxed), "interrupted");
+                let n = reader.read(&mut buffer)?;
+                if n == 0 {
+                    break;
+                }
+                hash.update(&buffer[..n]);
+                read = read.saturating_add(n as u64);
+                progress.streaming_message(|| message(read));
+            }
+            let actual: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
+            ensure!(actual == input.receipt.sha256, "download hash changed");
+            if let Some(stamp) = file_stamp(&metadata) {
+                ensure!(
+                    same_file(&metadata, &reader.metadata()?),
+                    "download changed during verification"
+                );
+                if write_cache {
+                    // Cache failures leave the receipt usable and trigger verification next time.
+                    let _ = save_json(
+                        &cache,
+                        &CachedVerification {
+                            sha256: actual,
+                            stamp,
+                        },
+                    );
+                }
+            }
+            inputs.push((input, metadata));
+            progress.0.inc(1);
+            progress.0.set_message(message(read));
+        }
+        progress.0.force_draw();
     }
-    progress.0.force_draw();
-    drop(progress);
     inputs.sort_by(|(a, _), (b, _)| {
         a.receipt
             .candidate

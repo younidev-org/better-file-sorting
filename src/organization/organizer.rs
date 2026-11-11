@@ -1,6 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (c) 2026 Younidev. See LICENSE for license terms.
-
 //! Materializes rule-planned repository views without changing canonical stored objects.
 //! View construction uses private staging and validates destination paths before
 //! publication. Metadata-only organization can operate on sealed repositories without

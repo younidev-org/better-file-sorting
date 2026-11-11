@@ -1,6 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (c) 2026 Younidev. See LICENSE for license terms.
-
 //! Implements the platform permission and publication primitives used throughout BFS.
 //! Directories are private, standard metadata is owner-readable/writable, and sealed
 //! payloads have no permission bits. Operations fail closed when safeguards cannot be

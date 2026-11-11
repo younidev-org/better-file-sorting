@@ -1,6 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (c) 2026 Younidev. See LICENSE for license terms.
-
 //! Transfers policy-selected resources into private, sealed staging with completion receipts.
 //! Workers share request controls and byte budgets; files remain inaccessible by path
 //! while their creation handles receive data. Only synchronized completed payloads are

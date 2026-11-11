@@ -1,6 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (c) 2026 Younidev. See LICENSE for license terms.
-
 //! Classify, store, and organize files and ZIP members.
 //!
 //! [Ingestion](ingest::pipeline) streams input into SHA-256-addressed objects.

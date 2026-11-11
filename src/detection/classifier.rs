@@ -1,6 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (c) 2026 Younidev. See LICENSE for license terms.
-
 //! Identifies supported file families from a bounded content prefix.
 //! Classification is deliberately shallow: signatures and text heuristics provide
 //! organization metadata without executing files or trusting filename extensions.

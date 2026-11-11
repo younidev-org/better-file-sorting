@@ -1,6 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (c) 2026 Younidev. See LICENSE for license terms.
-
 //! Coordinates discovery, extraction, classification, storage, metadata and organization.
 //! Workers process independent inputs in parallel. Object publication makes
 //! payloads durable before recording their occurrences in SQLite. A completed

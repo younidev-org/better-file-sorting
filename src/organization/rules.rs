@@ -1,6 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (c) 2026 Younidev. See LICENSE for license terms.
-
 //! Parses organization policies and resolves occurrence metadata into destination plans.
 //! Matching, filename templates and duplicate handling are applied deterministically.
 //! Path and collision checks protect publication, while archive-derived records retain

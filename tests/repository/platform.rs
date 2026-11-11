@@ -1,6 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (c) 2026 Younidev. See LICENSE for license terms.
-
 //! Platform security requirements and validation of example configurations and rules.
 
 #[cfg(not(unix))]

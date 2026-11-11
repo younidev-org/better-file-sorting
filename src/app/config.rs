@@ -1,6 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (c) 2026 Younidev. See LICENSE for license terms.
-
 //! Loads runtime TOML settings, applies CLI overrides and validates ingest constraints.
 //! Defaults preserve private storage and optional extraction budgets. Optional acquisition tables
 //! leave local workflows unchanged; receipt-driven inputs are resolved only when explicit
@@ -261,12 +258,20 @@ impl Config {
                 c.inputs.push(DEFAULT_INPUT_DIRECTORY.into());
             }
         }
+        c.resume |= args.resume;
+        if args.preset.is_some() {
+            c.preset = args.preset;
+            c.rules = None;
+        }
+        c.validate()?;
         if c.inputs.is_empty()
             && let Some(download) = &c.download
         {
-            for (input, metadata) in
-                crate::collection::acquisition::completed_inputs_cancellable(download, cancelled)?
-            {
+            for (input, metadata) in crate::collection::acquisition::completed_inputs_cancellable(
+                download,
+                cancelled,
+                !args.dry_run,
+            )? {
                 c.verified_inputs.insert(
                     input.path.clone(),
                     crate::collection::acquisition::VerifiedInput {
@@ -279,12 +284,6 @@ impl Config {
                 c.inputs.push(input.path);
             }
         }
-        c.resume |= args.resume;
-        if args.preset.is_some() {
-            c.preset = args.preset;
-            c.rules = None;
-        }
-        c.validate()?;
         Ok(c)
     }
     /// Validate worker, security, output, and extraction-limit settings.

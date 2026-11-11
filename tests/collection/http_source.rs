@@ -1,6 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (c) 2026 Younidev. See LICENSE for license terms.
-
 //! HTTP discovery, URL handling, redirect budgets, rate limits, and inventory ordering.
 
 use bfsort::{collection::acquisition::SourceConfig, collection::http_source::parse_links};

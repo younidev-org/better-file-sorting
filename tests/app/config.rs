@@ -1,6 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (c) 2026 Younidev. See LICENSE for license terms.
-
 //! TOML validation, CLI override precedence, and bounded or unlimited resource settings.
 
 use std::process::Command;

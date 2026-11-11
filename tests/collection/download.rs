@@ -1,6 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (c) 2026 Younidev. See LICENSE for license terms.
-
 //! Download publication, budgets, and cancellation tests.
 //!
 //! Loopback HTTP fixtures exercise sealed payloads, receipts, cache reuse, and
@@ -547,4 +544,61 @@ fn stalled_body_does_not_hold_the_download_budget_lock() {
     );
     assert_eq!(report.downloaded, 2, "{:?}", report.errors);
     assert_eq!(report.bytes, 12);
+}
+
+#[test]
+fn ingest_caches_verified_receipts_and_invalidates_same_size_changes() {
+    use bfsort::app::{
+        cli::{Cli, Command},
+        config::Config,
+    };
+    use clap::Parser;
+    use std::os::unix::fs::PermissionsExt;
+
+    let (root, download, report) = transfer(b"fixture", "1 KB");
+    let candidate = &report.candidates[0];
+    let payload = download
+        .staging_dir
+        .join(bfsort::collection::download::payload_path(
+            &download, candidate,
+        ));
+    std::fs::set_permissions(&payload, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let config = root.path().join("ingest.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[download]\nstaging_dir = {:?}\n",
+            download.staging_dir.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+    let Command::Ingest(mut args) = Cli::parse_from([
+        "bfsort",
+        "ingest",
+        "--dry-run",
+        "-c",
+        config.to_str().unwrap(),
+    ])
+    .command
+    else {
+        panic!("expected ingest")
+    };
+    let cache = download
+        .staging_dir
+        .join("control")
+        .join(format!("{}.verified", candidate.source_id));
+
+    Config::for_ingest(&args).unwrap();
+    assert!(!cache.exists());
+    args.dry_run = false;
+    Config::for_ingest(&args).unwrap();
+    assert!(cache.is_file());
+    Config::for_ingest(&args).unwrap();
+
+    std::fs::write(&payload, b"changed").unwrap();
+    let error = Config::for_ingest(&args).unwrap_err();
+    assert!(
+        error.to_string().contains("download hash changed"),
+        "{error}"
+    );
 }

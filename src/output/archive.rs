@@ -1,6 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (c) 2026 Younidev. See LICENSE for license terms.
-
 //! Inspects ZIP metadata and exports rule-planned layouts as ZIP archives.
 //! Input opening enforces configured archive limits; output publication uses private
 //! temporary storage and refuses replacement of existing destinations. Export selection

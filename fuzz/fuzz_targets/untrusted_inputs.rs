@@ -1,6 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (c) 2026 Younidev. See LICENSE for license terms.
-
 //! Exercises classification, rule parsing, archive names, and report serialization with bounded fuzz inputs.
 
 #![no_main]

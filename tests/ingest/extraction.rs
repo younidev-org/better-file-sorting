@@ -1,6 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (c) 2026 Younidev. See LICENSE for license terms.
-
 //! Streaming extraction, private staging, path safety, resource limits, and cancellation.
 
 use bfsort::{app::config::Limits, ingest::extraction::extract};

@@ -1,6 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (c) 2026 Younidev. See LICENSE for license terms.
-
 //! Extract ZIPs into a plain directory using the ingest path, integrity, and permission checks.
 
 use crate::{

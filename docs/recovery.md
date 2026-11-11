@@ -37,9 +37,11 @@ disposable repository and rejects `--resume`; use persistent ingestion then expo
 
 Both normal downloads and `--resume` reuse validated completed receipts beneath
 `collection/downloads/control/`. Receipts retain source identity, path, size and
-content hash. Sealed cached files are checked for path, permissions and size;
-explicitly accessible input is hash-verified before receipt-driven ingestion.
-Files cannot be opened through sealed permissions just to validate a cache.
+content hash. Sealed cached files are checked for path, permissions and size.
+The first receipt-driven ingest after unlocking hash-verifies the ZIP. Later
+invocations reuse the verification if the receipt hash, file identity, size,
+and modification and change timestamps match. Dry runs do not write verification
+cache files. Sealed downloads still require explicit access before ingestion.
 
 Failed or incomplete bodies restart, not continue via HTTP Range. Unreceipted
 existing destinations are retained and reported as conflicts. No source files or

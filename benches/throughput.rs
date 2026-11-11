@@ -1,6 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (c) 2026 Younidev. See LICENSE for license terms.
-
 //! Benchmarks ingestion, resume, and view publication with disposable synthetic archives.
 
 use bfsort::{

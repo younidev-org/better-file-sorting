@@ -1,6 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (c) 2026 Younidev. See LICENSE for license terms.
-
 //! Stores and imports occurrence metadata in SQLite.
 //! Content hashes identify objects; occurrence identities retain distinct source events.
 //! Imports validate the entire input before publishing a batch to the catalog.

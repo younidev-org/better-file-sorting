@@ -1,6 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (c) 2026 Younidev. See LICENSE for license terms.
-
 //! Shared integration fixtures for ZIP inputs, CLI subprocesses, and catalog queries.
 
 #![allow(dead_code)]
