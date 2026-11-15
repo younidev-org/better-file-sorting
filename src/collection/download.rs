@@ -11,7 +11,7 @@ const MAX_FILENAME_BYTES: usize = 240;
 use crate::{
     app::{
         config::SecurityMode,
-        presentation::{Progress, byte_progress, byte_rate},
+        presentation::{Progress, byte_progress},
     },
     collection::acquisition::*,
     collection::http_source::{HttpSource, wait_until},
@@ -298,7 +298,6 @@ pub fn run(
             budget
                 .expected_bytes
                 .filter(|_| budget.known_sizes == work.len()),
-            progress.0.elapsed(),
         )
     };
     {
@@ -488,17 +487,10 @@ pub fn run(
     Ok(report)
 }
 
-fn transfer_progress(
-    failed: usize,
-    cached: usize,
-    transferred: u64,
-    total: Option<u64>,
-    elapsed: Duration,
-) -> String {
+fn transfer_progress(failed: usize, cached: usize, transferred: u64, total: Option<u64>) -> String {
     format!(
-        "{} transferred · {} · {cached} cached · {failed} failed",
+        "{} transferred · {cached} cached · {failed} failed",
         byte_progress(transferred, total),
-        byte_rate(transferred, elapsed),
     )
 }
 
@@ -522,12 +514,14 @@ mod tests {
     }
 
     #[test]
-    fn transferred_bytes_have_measured_rate_and_use_known_totals() {
-        let elapsed = Duration::from_secs(2);
-        let unknown = transfer_progress(0, 0, 4096, None, elapsed);
-        assert!(unknown.contains("4.00 KiB transferred · 2.00 KiB/s"));
-        let known = transfer_progress(0, 1, 4096, Some(8192), elapsed);
-        assert!(known.contains("4.00 KiB / 8.00 KiB transferred · 2.00 KiB/s · 1 cached"));
-        assert!(transfer_progress(0, 0, 0, None, Duration::ZERO).contains("0 B/s"));
+    fn transfer_progress_shows_bytes_and_counts() {
+        assert_eq!(
+            transfer_progress(0, 0, 4096, None),
+            "4.00 KiB transferred · 0 cached · 0 failed"
+        );
+        assert_eq!(
+            transfer_progress(2, 1, 4096, Some(8192)),
+            "4.00 KiB / 8.00 KiB transferred · 1 cached · 2 failed"
+        );
     }
 }

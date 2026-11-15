@@ -49,12 +49,7 @@ detector reuses the 8 KiB prefix captured during hashing; ZIP and CFB candidates
 require additional bounded metadata reads. Repository-wide reports retain
 metadata in memory, so memory use grows with collection size.
 
-The benchmark harness uses synthetic benign inputs. Recorded timings are examples,
-not throughput guarantees for another machine or dataset:
-
-- [Ingestion before detailed detection](benchmark-detection-before.jsonl)
-- [Ingestion with detailed detection](benchmark-detection-after.jsonl)
-- [Detector microbenchmark](benchmark-detection-micro.jsonl)
+The benchmark harness uses synthetic benign inputs. Its timings depend on the machine and dataset.
 
 The ingestion comparison covers five workloads, five worker counts and both
 security modes. Quick-mode workloads use 100 small or duplicate archives, one
@@ -106,12 +101,6 @@ optional deadlines and cancellation of a stalled body. Terminal checks cover
 independent stdout/stderr color detection, NO_COLOR, plain CSV errors and labels
 that do not style untrusted paths as status text.
 
-Raw quick benchmark comparisons:
-
-- [Before interface/recovery changes](benchmark-interface-before.jsonl)
-- [After interface/recovery changes](benchmark-interface-after.jsonl)
-- [Checkpoint setup and verified resume](benchmark-resume.jsonl)
-
 The comparison uses the same synthetic five-workload, five-worker-count,
 standard/sealed matrix. Each normal and resume matrix has 50 cases. Resume setup
 processes the input with checkpoints; verified resume must accept zero new
@@ -136,7 +125,7 @@ and the candidate release binary:
 python3 benches/nested.py /path/to/v0.7.0/bfsort ./target/release/bfsort
 ```
 
-[Recorded results](benchmark-nested.jsonl) use seed 12345, one warm-up and five
+The measurements below use seed 12345, one warm-up and five
 measured runs, one worker and a warm OS cache. Many-small uses 1,000 files of
 1 KiB; few-large uses four files of 8 MiB. Each run has a separate repository.
 The harness records wall time, peak RSS, and sampled staging-file size at 5 ms

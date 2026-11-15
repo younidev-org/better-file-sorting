@@ -485,7 +485,7 @@ pub(crate) fn completed_inputs_cancellable(
     use crate::{
         app::{
             config::SecurityMode,
-            presentation::{Progress, byte_progress, byte_rate},
+            presentation::{Progress, byte_progress},
         },
         repository::security,
     };
@@ -552,9 +552,8 @@ pub(crate) fn completed_inputs_cancellable(
         let cached = inputs.len();
         let message = |read| {
             format!(
-                "{} ZIP bytes verified · {} · {cached} cached",
-                byte_progress(read, total),
-                byte_rate(read, progress.0.elapsed())
+                "{} ZIP bytes verified · {cached} cached",
+                byte_progress(read, total)
             )
         };
         let mut read = 0u64;

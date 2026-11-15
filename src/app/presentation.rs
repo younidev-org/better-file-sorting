@@ -245,15 +245,6 @@ pub fn byte_progress(done: u64, total: Option<u64>) -> String {
     }
 }
 
-pub fn byte_rate(done: u64, elapsed: Duration) -> String {
-    let rate = if elapsed.is_zero() {
-        0
-    } else {
-        (done as f64 / elapsed.as_secs_f64()) as u64
-    };
-    format!("{}/s", bytes(rate))
-}
-
 pub fn stats(repository: &std::path::Path, summary: &crate::output::report::Summary) -> String {
     use std::fmt::Write;
     let mismatches = summary
