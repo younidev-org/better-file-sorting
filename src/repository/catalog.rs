@@ -428,7 +428,7 @@ fn predicate(filters: &Filters, include_removed: bool) -> Result<(String, Vec<Va
     }
     for (column, list, exclude) in [
         (
-            "normalized_extension",
+            "o.normalized_extension",
             filters
                 .include_extensions
                 .iter()
@@ -437,7 +437,7 @@ fn predicate(filters: &Filters, include_removed: bool) -> Result<(String, Vec<Va
             false,
         ),
         (
-            "normalized_extension",
+            "o.normalized_extension",
             filters
                 .exclude_extensions
                 .iter()
@@ -446,7 +446,7 @@ fn predicate(filters: &Filters, include_removed: bool) -> Result<(String, Vec<Va
             true,
         ),
         (
-            "detected_format",
+            "o.detected_format",
             filters
                 .include_formats
                 .iter()
@@ -455,12 +455,30 @@ fn predicate(filters: &Filters, include_removed: bool) -> Result<(String, Vec<Va
             false,
         ),
         (
-            "detected_format",
+            "o.detected_format",
             filters
                 .exclude_formats
                 .iter()
                 .map(enum_text)
                 .collect::<Result<Vec<_>>>()?,
+            true,
+        ),
+        (
+            "COALESCE(lower(o.mime_type), '')",
+            filters
+                .include_mime_types
+                .iter()
+                .map(|mime| mime.to_ascii_lowercase())
+                .collect(),
+            false,
+        ),
+        (
+            "COALESCE(lower(o.mime_type), '')",
+            filters
+                .exclude_mime_types
+                .iter()
+                .map(|mime| mime.to_ascii_lowercase())
+                .collect(),
             true,
         ),
     ] {
@@ -469,7 +487,7 @@ fn predicate(filters: &Filters, include_removed: bool) -> Result<(String, Vec<Va
         }
         let placeholders = vec!["?"; list.len()].join(",");
         clauses.push(format!(
-            "o.{column} {}IN ({placeholders})",
+            "{column} {}IN ({placeholders})",
             if exclude { "NOT " } else { "" }
         ));
         values.extend(list.into_iter().map(Value::Text));

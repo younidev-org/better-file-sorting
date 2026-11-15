@@ -35,6 +35,10 @@ pub struct Filters {
     pub exclude_extensions: Vec<String>,
     pub include_formats: Vec<Format>,
     pub exclude_formats: Vec<Format>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub include_mime_types: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub exclude_mime_types: Vec<String>,
     pub sha256: Option<String>,
     pub mismatch: Option<Status>,
     pub min_size: Option<u64>,
@@ -51,6 +55,12 @@ pub struct Selection {
     pub include_format: Vec<Format>,
     #[arg(long, value_delimiter = ',', value_parser = parse_format)]
     pub exclude_format: Vec<Format>,
+    /// Select saved MIME types such as image/svg+xml
+    #[arg(long, value_delimiter = ',')]
+    pub include_mime: Vec<String>,
+    /// Exclude saved MIME types
+    #[arg(long, value_delimiter = ',')]
+    pub exclude_mime: Vec<String>,
     #[arg(long)]
     pub sha256: Option<String>,
     #[arg(long, value_enum)]
@@ -77,6 +87,8 @@ impl Selection {
         for (cli, configured) in [
             (&self.include_ext, &mut base.include_extensions),
             (&self.exclude_ext, &mut base.exclude_extensions),
+            (&self.include_mime, &mut base.include_mime_types),
+            (&self.exclude_mime, &mut base.exclude_mime_types),
         ] {
             if !cli.is_empty() {
                 configured.clone_from(cli);
@@ -122,6 +134,13 @@ impl Filters {
             );
         }
         ensure!(
+            self.include_mime_types
+                .iter()
+                .chain(&self.exclude_mime_types)
+                .all(|value| crate::detection::classifier::valid_mime_type(value)),
+            "invalid MIME type filter"
+        );
+        ensure!(
             self.min_size.unwrap_or(0) <= self.max_size.unwrap_or(u64::MAX),
             "minimum size exceeds maximum size"
         );
@@ -139,6 +158,8 @@ impl Filters {
             && self.exclude_extensions.is_empty()
             && self.include_formats.is_empty()
             && self.exclude_formats.is_empty()
+            && self.include_mime_types.is_empty()
+            && self.exclude_mime_types.is_empty()
             && self.sha256.is_none()
             && self.mismatch.is_none()
             && self.min_size.is_none()
@@ -191,12 +212,21 @@ impl Filters {
         let ext = crate::detection::mismatch::normalize_extension(extension);
         let extension_matches =
             |value: &String| crate::detection::mismatch::normalize_extension(value) == ext;
+        let mime_matches = |value: &String| {
+            detection
+                .mime_type
+                .as_deref()
+                .is_some_and(|mime| mime.eq_ignore_ascii_case(value))
+        };
         (self.include_extensions.is_empty()
             || self.include_extensions.iter().any(extension_matches))
             && !self.exclude_extensions.iter().any(extension_matches)
             && (self.include_formats.is_empty()
                 || self.include_formats.contains(&detection.detected_format))
             && !self.exclude_formats.contains(&detection.detected_format)
+            && (self.include_mime_types.is_empty()
+                || self.include_mime_types.iter().any(mime_matches))
+            && !self.exclude_mime_types.iter().any(mime_matches)
             && self.sha256.as_ref().is_none_or(|hash| hash == sha)
             && self.mismatch.is_none_or(|status| status == mismatch)
             && self.min_size.is_none_or(|min| size >= min)
@@ -238,7 +268,11 @@ mod tests {
     }
     #[test]
     fn file_selection_uses_name_and_detected_content_independently() {
-        let detection = crate::detection::classifier::detect(b"%PDF-1.7\nfixture");
+        let detection = crate::detection::classifier::Detection {
+            detected_format: Format::Pdf,
+            mime_type: Some("application/pdf".into()),
+            ..Default::default()
+        };
         let filters = Filters {
             include_extensions: vec![".TXT".into()],
             include_formats: vec![Format::Pdf],
@@ -248,7 +282,7 @@ mod tests {
         assert!(filters.matches_file("folder/renamed.txt", &detection, "hash", 3));
         assert!(!filters.matches_file("folder/renamed.pdf", &detection, "hash", 3));
         assert!(!filters.matches_file("folder/renamed.txt", &detection, "hash", 2));
-        let other = crate::detection::classifier::detect(b"plain prose");
+        let other = crate::detection::classifier::Detection::default();
         assert!(!filters.matches_file("folder/renamed.txt", &other, "hash", 3));
     }
 }

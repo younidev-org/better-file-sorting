@@ -114,7 +114,7 @@ pub fn summary_with_references(
         per_category: categories,
         security_mode: repo.mode(),
         by_detected_family: count_by(records, |r| r.detection.detected_family.as_str().into()),
-        by_detected_format: count_by(records, |r| r.detection.detected_format.as_str().into()),
+        by_detected_format: count_by(records, |r| r.detection.format_label().into()),
         by_original_extension: count_by(records, |r| {
             crate::detection::mismatch::extension(&r.original_entry_name)
         }),
@@ -169,7 +169,7 @@ fn cross_counts<'a>(records: impl Iterator<Item = &'a Occurrence>) -> Vec<CrossC
         let group = groups
             .entry((
                 crate::detection::mismatch::extension(&r.original_entry_name),
-                r.detection.detected_format.as_str().into(),
+                r.detection.format_label().into(),
             ))
             .or_default();
         group.0 += 1;

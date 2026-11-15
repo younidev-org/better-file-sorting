@@ -20,9 +20,9 @@ bfsort diff LEFT RIGHT
 
 ## Selection
 
-`query`, `sample`, `split` and `merge` accept `-c CONFIG` and the shared selection flags: `--include-ext`, `--exclude-ext`, `--include-format`, `--exclude-format`, `--sha256`, `--mismatch`, `--min-size` and `--max-size`. Extension and format lists accept repeated flags and comma-separated values. Extensions use original names; formats use effective content detection. Exclusions win. Nonempty extension and format include lists must both match.
+`query`, `sample`, `split` and `merge` accept `-c CONFIG` and the shared selection flags: `--include-ext`, `--exclude-ext`, `--include-format`, `--exclude-format`, `--include-mime`, `--exclude-mime`, `--sha256`, `--mismatch`, `--min-size` and `--max-size`. Extension, format, and MIME lists accept repeated flags and comma-separated values. Extensions use original names; format aliases and MIME types use saved content detection. Exclusions win. Each nonempty inclusion list must match.
 
-The corresponding TOML `[filters]` lists are `include_extensions`, `exclude_extensions`, `include_formats` and `exclude_formats`. A supplied CLI list replaces its configured list; other lists still apply. There is no special CLI syntax to clear a configured list.
+The corresponding TOML `[filters]` lists are `include_extensions`, `exclude_extensions`, `include_formats`, `exclude_formats`, `include_mime_types`, and `exclude_mime_types`. A supplied CLI list replaces its configured list; other lists still apply. There is no special CLI syntax to clear a configured list.
 
 ## Create independent repositories
 

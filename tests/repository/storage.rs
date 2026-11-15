@@ -1,26 +1,11 @@
 //! Canonical object publication, permissions, deduplication, and orphan accounting.
 
 #![cfg(unix)]
-use bfsort::{
-    app::config::SecurityMode, detection::classifier::classify, repository::storage::Repository,
-};
+use bfsort::{app::config::SecurityMode, repository::storage::Repository};
 use std::{
     io::Write,
     os::unix::fs::{MetadataExt, PermissionsExt},
 };
-#[test]
-/// Ensure format classification uses content signatures rather than names.
-fn classification_uses_content() {
-    for (bytes, expected) in [
-        (b"\x7fELFhello".as_slice(), "elf"),
-        (b"%PDF-1.7\n", "pdf"),
-        (b"hello\n", "text"),
-        (b"", "unknown"),
-        (b"\0\x01\x02\xff", "unknown"),
-    ] {
-        assert_eq!(classify(bytes), expected);
-    }
-}
 #[test]
 /// Ensure sealed canonical commits are atomic and deduplicated.
 fn canonical_commit_is_sealed_atomic_and_deduplicated() {
@@ -72,11 +57,6 @@ fn standard_objects_are_private_and_symlinks_refused() {
     let link = dir.path().join("link");
     std::os::unix::fs::symlink(repo.root(), &link).unwrap();
     assert!(Repository::open(&link, SecurityMode::Sealed).is_err());
-}
-#[test]
-/// Ensure Java bytecode is not misclassified as Mach-O.
-fn java_class_is_not_macho() {
-    assert_eq!(classify(b"\xca\xfe\xba\xbe\x00\x00\x00\x3d"), "other");
 }
 #[test]
 /// Ensure reports account for orphaned canonical objects.

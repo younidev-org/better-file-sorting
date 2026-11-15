@@ -77,9 +77,19 @@ fn zip_only_roundtrip_with_optional_password_and_no_overwrite() {
         let original_zip = fs::read(&output).unwrap();
         assert!(original_zip.len() < content.len());
         let mut zip = zip::ZipArchive::new(fs::File::open(&output).unwrap()).unwrap();
-        assert_eq!(zip.len(), 2); // one payload and export report
+        assert_eq!(zip.len(), 3); // one payload, report, and index
         assert!(zip.by_name("layout.jsonl").is_err());
         assert!(zip.by_name("manifest.jsonl").is_err());
+        let mut database = if encrypted {
+            assert!(zip.by_name("export.sqlite3").is_err());
+            zip.by_name_decrypt("export.sqlite3", b"secret").unwrap()
+        } else {
+            zip.by_name("export.sqlite3").unwrap()
+        };
+        let mut signature = [0; 16];
+        database.read_exact(&mut signature).unwrap();
+        assert_eq!(&signature, b"SQLite format 3\0");
+        drop(database);
         let index = (0..zip.len())
             .find(|i| {
                 zip.by_index_data(*i)
@@ -105,8 +115,9 @@ fn zip_only_roundtrip_with_optional_password_and_no_overwrite() {
         assert_eq!(fs::read(&output).unwrap(), original_zip);
         assert_eq!(
             fs::read_dir(&input).unwrap().count(),
-            if encrypted { 3 } else { 2 }
+            if encrypted { 4 } else { 3 }
         );
+        assert!(output.with_extension("sqlite3").is_file());
         assert_eq!(fs::read(input.join("note.txt")).unwrap(), content);
     }
 }
@@ -285,7 +296,7 @@ fn password_hardlinks_are_excluded_from_output() {
         String::from_utf8_lossy(&out.stderr)
     );
     let zip = zip::ZipArchive::new(fs::File::open(&output).unwrap()).unwrap();
-    assert_eq!(zip.len(), 2, "unexpected extra ZIP entries");
+    assert_eq!(zip.len(), 3, "unexpected extra ZIP entries");
     assert_eq!(
         zip.file_names()
             .filter(|name| name.as_ref().is_ok_and(|name| name.ends_with(".sample")))

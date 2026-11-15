@@ -47,7 +47,7 @@ must be 1–256. Security defaults to sealed (`0000`); standard (`0600`) permits
 payload exports. Private directories (`0700`) and no automatic unsealing are
 mandatory safeguards. An existing repository's mode cannot change automatically.
 
-`preset` accepts `by-format`, `by-format-or-extension`, `by-extension`, `by-mismatch`. Its omitted default
+`preset` accepts `by-format`, `by-extension`, `by-mismatch`. Its omitted default
 is `by-format`. Alternatively, `rules = "rules.toml"` selects custom rules.
 Presets preserve all source occurrences. Custom rule duplicate policy is explicit
 in `[organization]`. `resume = true` enables checkpoint reuse; CLI `--resume`
@@ -141,8 +141,8 @@ Matchers within a rule all apply; first matching rule wins. Common settings:
   `original_extension`, `encrypted`, `duplicate`, `min_size`, `max_size`.
 - `[rules.output]`: replacement `directory` and `filename` templates.
 
-The directory-only `{format_or_extension}` field enables automatic content grouping
-with extension fallback, including in custom rules. See the [automatic rules
+The directory-only `{format_group}` field groups by saved MIME type and uses
+a short format alias when available. See the [automatic rules
 example](../examples/rules.automatic.example.toml).
 
 Template fields include `detected_format`, `detected_family`, `mismatch_status`,

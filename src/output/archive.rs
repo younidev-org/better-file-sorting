@@ -37,6 +37,24 @@ pub struct ZipExport {
     pub entries: Vec<crate::organization::rules::Planned>,
 }
 
+const INDEX_NAME: &str = "export.sqlite3";
+
+fn directory_output(config: &crate::app::config::Config) -> bool {
+    config.zip_each_dir
+        || !config
+            .output
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
+}
+
+fn collection_index_path(config: &crate::app::config::Config) -> PathBuf {
+    if directory_output(config) {
+        config.output.join(INDEX_NAME)
+    } else {
+        config.output.with_extension("sqlite3")
+    }
+}
+
 /// Resolve exact sorted-directory selections once for previews and publication.
 pub fn plan_exports(
     plan: &[crate::organization::rules::Planned],
@@ -45,7 +63,7 @@ pub fn plan_exports(
 ) -> Result<Vec<ZipExport>> {
     config.validate()?;
     let exact_groups =
-        config.zip_each_dir && config.zip_dirs.is_empty() && rules.uses_format_fallback();
+        config.zip_each_dir && config.zip_dirs.is_empty() && rules.uses_format_groups();
     let directories: BTreeSet<String> = if config.zip_dirs.is_empty() && config.zip_each_dir {
         plan.iter()
             .filter_map(|p| {
@@ -84,7 +102,11 @@ pub fn plan_exports(
             .collect();
         return Ok(vec![ZipExport {
             reused: false,
-            output: config.output.clone(),
+            output: if directory_output(config) {
+                config.output.join("archive.zip")
+            } else {
+                config.output.clone()
+            },
             entries,
         }]);
     }
@@ -102,6 +124,10 @@ pub fn plan_exports(
         })
         .collect();
     for (index, a) in exports.iter().enumerate() {
+        ensure!(
+            !a.output.starts_with(config.output.join(INDEX_NAME)),
+            "ZIP output path conflicts with the collection index"
+        );
         for b in &exports[index + 1..] {
             ensure!(
                 !a.output.starts_with(&b.output) && !b.output.starts_with(&a.output),
@@ -129,20 +155,6 @@ pub fn publish_exports(
         !config.output.try_exists()?,
         "ZIP output already exists; choose a fresh output path"
     );
-    if !config.zip_each_dir {
-        let export = exports
-            .first()
-            .ok_or_else(|| anyhow::anyhow!("no ZIP export planned"))?;
-        return publish(
-            repo,
-            &export.entries,
-            &export.output,
-            password,
-            config.compression_level,
-            cancelled,
-            records,
-        );
-    }
     let parent = config
         .output
         .parent()
@@ -150,6 +162,25 @@ pub fn publish_exports(
         .unwrap_or(Path::new("."));
     if !parent.is_dir() {
         crate::collection::acquisition::private_tree(parent)?;
+    }
+    if !directory_output(config) {
+        let export = exports.first().context("no ZIP export planned")?;
+        let destination = collection_index_path(config);
+        check_path(&destination)?;
+        ensure!(!destination.try_exists()?, "export index already exists");
+        let index = build_collection_index(config, exports, records, cancelled, parent)?;
+        publish(
+            repo,
+            &export.entries,
+            &export.output,
+            password,
+            config.compression_level,
+            cancelled,
+            records,
+        )?;
+        index.persist_noclobber(destination)?;
+        File::open(parent)?.sync_all()?;
+        return Ok(());
     }
     let staging = crate::repository::security::private_tempdir(parent, ".bfs-exports-")?;
     for export in exports {
@@ -173,6 +204,9 @@ pub fn publish_exports(
             records,
         )?;
     }
+    build_collection_index(config, exports, records, cancelled, staging.path())?
+        .persist_noclobber(staging.path().join(INDEX_NAME))?;
+    File::open(staging.path())?.sync_all()?;
     ensure!(
         !cancelled.load(std::sync::atomic::Ordering::Relaxed),
         "interrupted"
@@ -250,7 +284,7 @@ fn publish(
 
     let progress = Progress::new(Some(plan.len() as u64), "Exporting ZIP entries");
     ensure!(!cancelled.load(Ordering::Relaxed), "interrupted");
-    let (report, total) = export_report(plan, records)?;
+    let (mut report, total) = export_report(plan, records)?;
     let message = |read, written| {
         format!(
             "{} input read · {} ZIP written",
@@ -304,6 +338,10 @@ fn publish(
         progress.0.inc(1);
     }
     progress.0.set_message(message(read, zip_bytes(&zip)));
+    let mut index = export_index(plan, records, cancelled)?;
+    report["index_sha256"] = serde_json::json!(archive_digest(index.path(), cancelled)?.sha256);
+    zip.start_file(INDEX_NAME, options)?;
+    std::io::copy(index.as_file_mut(), &mut zip)?;
     zip.start_file("export.json", options)?;
     serde_json::to_writer(&mut zip, &report)?;
     let written = zip.finish()?.metadata().ok().map_or(0, |meta| meta.len());
@@ -320,6 +358,104 @@ fn zip_bytes(zip: &zip::ZipWriter<&mut File>) -> u64 {
     zip.get_ref()
         .and_then(|file| file.metadata().ok())
         .map_or(0, |meta| meta.len())
+}
+
+/// Build a standalone browsing index containing only entries in this ZIP.
+fn export_index(
+    plan: &[crate::organization::rules::Planned],
+    records: &[crate::repository::metadata::Occurrence],
+    cancelled: &std::sync::atomic::AtomicBool,
+) -> Result<tempfile::NamedTempFile> {
+    build_index(
+        tempfile::NamedTempFile::new()?,
+        plan.iter().map(|entry| ("", entry)),
+        records,
+        cancelled,
+    )
+}
+
+/// Index the published ZIP paths relative to the collection database.
+fn build_collection_index(
+    config: &crate::app::config::Config,
+    exports: &[ZipExport],
+    records: &[crate::repository::metadata::Occurrence],
+    cancelled: &std::sync::atomic::AtomicBool,
+    staging: &Path,
+) -> Result<tempfile::NamedTempFile> {
+    let mut archives = Vec::with_capacity(exports.len());
+    for export in exports {
+        let relative = if directory_output(config) {
+            export.output.strip_prefix(&config.output)?
+        } else {
+            Path::new(export.output.file_name().context("missing ZIP filename")?)
+        };
+        let relative = relative.to_str().context("ZIP path must be valid UTF-8")?;
+        archives.push((relative, &export.entries));
+    }
+    let index = build_index(
+        tempfile::NamedTempFile::new_in(staging)?,
+        archives
+            .into_iter()
+            .flat_map(|(archive, entries)| entries.iter().map(move |entry| (archive, entry))),
+        records,
+        cancelled,
+    )?;
+    index.as_file().sync_all()?;
+    Ok(index)
+}
+
+fn build_index<'a>(
+    file: tempfile::NamedTempFile,
+    entries: impl IntoIterator<Item = (&'a str, &'a crate::organization::rules::Planned)>,
+    records: &[crate::repository::metadata::Occurrence],
+    cancelled: &std::sync::atomic::AtomicBool,
+) -> Result<tempfile::NamedTempFile> {
+    let mut database = rusqlite::Connection::open(file.path())?;
+    let transaction = database.transaction()?;
+    transaction.execute_batch(
+        "CREATE TABLE entries (
+            archive_path TEXT NOT NULL,
+            path TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            size INTEGER NOT NULL,
+            original_entry_name TEXT NOT NULL,
+            detected_format TEXT NOT NULL,
+            detected_family TEXT NOT NULL,
+            mime_type TEXT,
+            mismatch_status TEXT NOT NULL,
+            PRIMARY KEY (archive_path, path)
+        );
+        CREATE INDEX entries_format ON entries(detected_format);",
+    )?;
+    let records: BTreeMap<_, _> = records
+        .iter()
+        .map(|r| (r.occurrence_id.as_str(), r))
+        .collect();
+    {
+        let mut insert = transaction.prepare("INSERT INTO entries VALUES(?,?,?,?,?,?,?,?,?)")?;
+        for (archive, entry) in entries {
+            ensure!(
+                !cancelled.load(std::sync::atomic::Ordering::Relaxed),
+                "interrupted"
+            );
+            let row = records
+                .get(entry.occurrence_id.as_str())
+                .context("export occurrence is missing")?;
+            insert.execute(rusqlite::params![
+                archive,
+                entry.path,
+                entry.sha256,
+                i64::try_from(row.size)?,
+                row.original_entry_name,
+                row.detection.format_label(),
+                row.detection.detected_family.as_str(),
+                row.detection.mime_type,
+                row.mismatch.status.as_str(),
+            ])?;
+        }
+    }
+    transaction.commit()?;
+    Ok(file)
 }
 
 /// Compact report binds the payload layout and effective selected metadata without exporting records.
@@ -352,7 +488,7 @@ fn export_report(
     })?;
     Ok((
         serde_json::json!({
-            "schema_version": 2, "kind": "bfsort-export", "tool_version": env!("CARGO_PKG_VERSION"),
+            "schema_version": 3, "kind": "bfsort-export", "tool_version": env!("CARGO_PKG_VERSION"),
             "layout_fingerprint": crate::repository::metadata::digest(&serde_json::to_vec(plan)?),
             "snapshot_fingerprint": crate::repository::metadata::digest(&serde_json::to_vec(&selected)?),
             "payload_entries": plan.len(), "occurrences": selected.len(), "unique_objects": hashes.len(),
@@ -426,7 +562,7 @@ struct ExportCheckpoint {
     completed: bool,
 }
 fn archive_digest(path: &Path, cancelled: &std::sync::atomic::AtomicBool) -> Result<ExportReceipt> {
-    let _progress = crate::app::presentation::Progress::new(None, "Verifying ZIP checksum");
+    let _progress = crate::app::presentation::Progress::new(None, "Verifying export checksum");
     use sha2::{Digest, Sha256};
     use std::io::Read;
     crate::repository::security::validate_file(path, crate::app::config::SecurityMode::Standard)?;
@@ -492,9 +628,11 @@ fn publish_resumable(
         "{}.json",
         crate::repository::metadata::digest(target.as_os_str().as_encoded_bytes())
     ));
+    let index_path = collection_index_path(config);
+    check_path(&index_path)?;
     // Passwords are never fingerprinted; verify encrypted completed archives with the supplied password.
     let fingerprint = crate::repository::metadata::digest(&serde_json::to_vec(&(
-        1,
+        4,
         env!("CARGO_PKG_VERSION"),
         repo.root(),
         &target,
@@ -519,7 +657,7 @@ fn publish_resumable(
         state
     } else {
         ensure!(
-            !config.output.try_exists()?,
+            !config.output.try_exists()? && !index_path.try_exists()?,
             "output exists without a verified export checkpoint; choose a fresh output path"
         );
         ExportCheckpoint {
@@ -547,8 +685,22 @@ fn publish_resumable(
     );
     state.completed = false;
     crate::collection::acquisition::save_json(&state_path, &state)?;
-    if config.zip_each_dir {
+    if directory_output(config) {
         crate::repository::security::private_dir(&config.output)?;
+    }
+    let index_parent = index_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let index = build_collection_index(config, exports, records, cancelled, index_parent)?;
+    let index_exists = index_path.try_exists()?;
+    if index_exists {
+        let expected = archive_digest(index.path(), cancelled)?;
+        let actual = archive_digest(&index_path, cancelled)?;
+        ensure!(
+            expected.size == actual.size && expected.sha256 == actual.sha256,
+            "collection index changed; refusing replacement"
+        );
     }
     for export in exports {
         ensure!(
@@ -610,6 +762,10 @@ fn publish_resumable(
         crate::collection::acquisition::save_json(&state_path, &state)?;
     }
     ensure!(!cancelled.load(Ordering::Relaxed), "interrupted");
+    if !index_exists {
+        index.persist_noclobber(&index_path)?;
+        File::open(index_parent)?.sync_all()?;
+    }
     state.completed = true;
     crate::collection::acquisition::save_json(&state_path, &state)?;
     Ok(())
@@ -632,7 +788,7 @@ fn read_export_report(
     ensure!(header.size() <= 65536, "oversized export report");
     let header: serde_json::Value = serde_json::from_reader(header)?;
     ensure!(
-        header["schema_version"] == 2
+        header["schema_version"] == 3
             && header["kind"] == "bfsort-export"
             && header["layout_fingerprint"]
                 .as_str()
@@ -657,14 +813,47 @@ fn verify_export_layout(
         crate::app::presentation::Progress::new(Some(plan.len() as u64), "Verifying ZIP entries");
     let mut archive = ZipArchive::new(File::open(path)?)?;
     let header = read_export_report(&mut archive, password)?;
+    let index = export_index(plan, records, cancelled)?;
+    let index_digest = archive_digest(index.path(), cancelled)?;
+    let mut expected = export_report(plan, records)?.0;
+    expected["index_sha256"] = serde_json::json!(index_digest.sha256);
+    ensure!(header == expected, "uncheckpointed export report mismatch");
     ensure!(
-        header == export_report(plan, records)?.0,
-        "uncheckpointed export report mismatch"
-    );
-    ensure!(
-        archive.len() == plan.len() + 1,
+        archive.len() == plan.len() + 2,
         "uncheckpointed export has an unexpected entry count"
     );
+    {
+        let mut entry = if let Some(password) = password {
+            archive.by_name_decrypt(INDEX_NAME, password.as_bytes())?
+        } else {
+            archive.by_name(INDEX_NAME)?
+        };
+        ensure!(
+            entry.size() == index_digest.size,
+            "export index size mismatch"
+        );
+        let mut hash = Sha256::new();
+        let mut buffer = [0; 65536];
+        loop {
+            ensure!(
+                !cancelled.load(std::sync::atomic::Ordering::Relaxed),
+                "interrupted"
+            );
+            let n = entry.read(&mut buffer)?;
+            if n == 0 {
+                break;
+            }
+            hash.update(&buffer[..n]);
+        }
+        ensure!(
+            hash.finalize()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+                == index_digest.sha256,
+            "export index checksum mismatch"
+        );
+    }
     let sizes: BTreeMap<_, _> = records
         .iter()
         .map(|r| (r.occurrence_id.as_str(), r.size))

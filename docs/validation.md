@@ -44,9 +44,7 @@ import untrusted filename columns as text in spreadsheet software.
 ## Performance
 
 Worker count, file sizes, compression, duplicate frequency and filesystem latency
-all affect throughput. More workers do not always improve performance. The
-detector reuses the 8 KiB prefix captured during hashing; ZIP and CFB candidates
-require additional bounded metadata reads. Repository-wide reports retain
+all affect throughput. More workers do not always improve performance. Ingest classification invokes the Linux `file` command for each payload. Repository-wide reports retain
 metadata in memory, so memory use grows with collection size.
 
 The benchmark harness uses synthetic benign inputs. Its timings depend on the machine and dataset.
@@ -54,7 +52,7 @@ The benchmark harness uses synthetic benign inputs. Its timings depend on the ma
 The ingestion comparison covers five workloads, five worker counts and both
 security modes. Quick-mode workloads use 100 small or duplicate archives, one
 archive with 100 entries, or four 1 MiB archives. Results vary in both directions;
-the small in-memory detector benchmark does not predict end-to-end throughput.
+the detection benchmark measures the installed Linux `file` command on a separate corpus.
 
 ## Developer checks
 

@@ -18,7 +18,6 @@ use unicode_normalization::UnicodeNormalization;
 pub enum Preset {
     #[default]
     ByFormat,
-    ByFormatOrExtension,
     ByExtension,
     ByMismatch,
 }
@@ -78,7 +77,7 @@ fn deserialize_rule_bytes<'de, D: serde::Deserializer<'de>>(
 const FIELDS: &[&str] = &[
     "file_type",
     "detected_format",
-    "format_or_extension",
+    "format_group",
     "detected_family",
     "mismatch_status",
     "original_name",
@@ -227,7 +226,7 @@ fn template(text: &str, filename: bool, policy: FilenamePolicy) -> Result<()> {
         "unsafe template component"
     );
     ensure!(
-        text.split('/').count() + text.matches("{format_or_extension}").count() <= 8,
+        text.split('/').count() + 2 * text.matches("{format_group}").count() <= 8,
         "directory template exceeds 8 components"
     );
     if filename {
@@ -249,8 +248,8 @@ fn template(text: &str, filename: bool, policy: FilenamePolicy) -> Result<()> {
             "unknown template placeholder"
         );
         ensure!(
-            !filename || &rest[start + 1..end] != "format_or_extension",
-            "format_or_extension is a directory-only placeholder"
+            !filename || &rest[start + 1..end] != "format_group",
+            "format grouping is a directory-only placeholder"
         );
         rest = &rest[end + 1..];
     }
@@ -308,26 +307,13 @@ fn regular_filename(value: &str) -> String {
         None => sanitize(value),
     }
 }
-/// Keep filename fallback visibly separate from content-based classification.
-fn format_or_extension(row: &Occurrence) -> String {
-    use crate::detection::classifier::{Confidence, Format};
-    let detection = &row.detection;
-    if detection.detected_format == Format::Ambiguous {
-        return "ambiguous".into();
-    }
-    if !matches!(
-        detection.detected_format,
-        Format::Unknown | Format::NotEvaluated
-    ) && detection.confidence >= Confidence::Medium
-    {
-        return format!("detected/{}", detection.detected_format.as_str());
-    }
-    let extension = crate::detection::mismatch::normalize_extension(&row.original_extension);
-    let extension = sanitize(&extension);
-    if extension == "_" {
-        "undetected/no-extension".into()
+/// Keep unregistered MIME groups separate from the short format aliases.
+fn format_group(row: &Occurrence) -> String {
+    let label = row.detection.format_label();
+    if let Some((kind, subtype)) = label.split_once('/') {
+        format!("mime/{}/{}", sanitize(kind), sanitize(subtype))
     } else {
-        format!("undetected/extension-{extension}")
+        sanitize(label)
     }
 }
 /// Render a validated template using one occurrence's metadata.
@@ -340,7 +326,7 @@ fn render(text: &str, row: &Occurrence, duplicate: bool, policy: FilenamePolicy)
         let value = match &rest[start + 1..end] {
             "file_type" => row.file_type.clone(),
             "detected_format" => row.detection.detected_format.as_str().into(),
-            "format_or_extension" => format_or_extension(row),
+            "format_group" => format_group(row),
             "detected_family" => row.detection.detected_family.as_str().into(),
             "mismatch_status" => row.mismatch.status.as_str().into(),
             "original_name" => row.original_name.clone(),
@@ -355,7 +341,7 @@ fn render(text: &str, row: &Occurrence, duplicate: bool, policy: FilenamePolicy)
             "occurrence_id" => row.occurrence_id.clone(),
             _ => unreachable!("validated template"),
         };
-        if &rest[start + 1..end] == "format_or_extension" {
+        if &rest[start + 1..end] == "format_group" {
             result.push_str(&value);
         } else if policy == FilenamePolicy::Regular && &rest[start + 1..end] == "original_name" {
             result.push_str(&regular_filename(&value));
@@ -368,19 +354,18 @@ fn render(text: &str, row: &Occurrence, duplicate: bool, policy: FilenamePolicy)
     result
 }
 impl Rules {
-    pub fn uses_format_fallback(&self) -> bool {
-        self.organization
-            .default_directory
-            .contains("{format_or_extension}")
+    /// Whether automatic ZIP grouping must preserve nested MIME directories.
+    pub fn uses_format_groups(&self) -> bool {
+        let grouped = |path: &str| path.contains("{format_group}");
+        grouped(&self.organization.default_directory)
             || self
                 .rules
                 .iter()
-                .any(|rule| rule.output.directory.contains("{format_or_extension}"))
+                .any(|rule| grouped(&rule.output.directory))
     }
     pub fn for_preset(preset: Preset) -> Self {
         let directory = match preset {
-            Preset::ByFormat => "{detected_format}",
-            Preset::ByFormatOrExtension => "{format_or_extension}",
+            Preset::ByFormat => "{format_group}",
             Preset::ByExtension => "{original_extension}",
             Preset::ByMismatch => "{mismatch_status}",
         };
@@ -487,7 +472,7 @@ impl Rules {
             *counts.entry(&row.sha256).or_insert(0usize) += 1;
         }
         let mut seen = BTreeSet::new();
-        let mut paths = BTreeSet::from(["export.json".to_string()]);
+        let mut paths = BTreeSet::from(["export.json".to_string(), "export.sqlite3".to_string()]);
         let mut directories = BTreeSet::new();
         let mut result = vec![];
         for row in sorted {

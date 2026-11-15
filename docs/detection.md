@@ -1,24 +1,21 @@
 # Content detection and mismatch reports
 
-bfsort records content evidence independently of the filename. A mismatch is a
-filename/content inconsistency, not a malware verdict. Detection never executes,
-renders, follows links, or recursively extracts content. Permissions are not a sandbox.
+BFSORT runs the Linux `file --mime-type` command on staged content during
+ingest and reclassification. Install `file` on PATH. Plain extraction with
+`ingest --unzip-only` skips detection.
 
 ## Stored fields and compatibility
 
-Each occurrence retains its original name, final original extension, archive entry,
-source provenance, SHA-256, size and identity. New `detection` metadata contains
-`detected_family`, `detected_format`, optional `mime_type`, `confidence`, `evidence`,
-`alternatives`, and `detector_version` (`bfsort-3`). New `mismatch` metadata contains
-`status` and `reason`. Detection is performed before the staging handle is sealed
-and published, using the prefix captured during the existing hash/copy pass.
+SQLite stores the MIME result alongside the original filename and extension.
+The TOML registry supplies optional format and family aliases for filters,
+reports, and extension mismatch checks. A specific MIME type such as
+`image/svg+xml` appears in format groups and statistics even without a registry
+entry. Generic results such as `application/octet-stream` group under
+`undetected`. Results depend on the installed `file` version and magic database.
 
-`file_type` and `{file_type}` use the broad eight-category classifier and
-meaning. They are intentionally independent of the stricter detailed detector:
-for example an incomplete ELF prefix can retain legacy `file_type = "elf"` while
-its detailed format is `unknown`. Use `detected_format` for precise content grouping.
-Old records default to `not_evaluated` for detection and mismatch, never `match`.
-Use a release compatible with the repository's SQLite schema.
+New detections record the backend as `linux-file-1`. Existing catalogs and JSON
+records retain their fields. Reclassification refreshes detection from stored
+payloads when an older catalog was classified by a different backend.
 
 Explicitly analyze an old **standard-mode** repository:
 
@@ -26,10 +23,10 @@ Explicitly analyze an old **standard-mode** repository:
 bfsort reclassify ./repository --resume
 ```
 
-This hash-verifies each selected unique object, performs bounded classification and atomically updates SQLite classification metadata. Cancellation preserves the previous committed catalog values. Per-object checkpoints reuse detection with `--resume`; objects are still hash-verified. A new view is published using saved grouping rules; older views fall back to `by-format`.
+This hash-verifies each selected unique object, runs `file` for classification and atomically updates SQLite classification metadata. Cancellation preserves the previous committed catalog values. Per-object checkpoints reuse detection with `--resume`; objects are still hash-verified. A new view is published using saved grouping rules; older views fall back to `by-format`.
 Sealed repositories are refused; bfsort never changes payload permissions automatically.
 
-## Supported identifiers and evidence
+## Format and family aliases
 
 | Family | Format identifiers |
 | --- | --- |
@@ -43,52 +40,8 @@ Sealed repositories are refused; bfsort never changes payload permissions automa
 | text | `json`, `text` |
 | other states | `unknown`, `ambiguous`, `not_evaluated` |
 
-Confidence describes detection evidence, not safety:
-
-- `high`: a strong signature with bounded header checks, a recognized shebang,
-  or a supported ZIP directory structure.
-- `medium`: a ZIP prefix without a validated bounded directory, a text structural
-  preamble, complete JSON, or conflicting interpretations.
-- `low`: printable UTF-8 without stronger evidence.
-- `unknown`: no sufficient evidence, or a legacy unevaluated record.
-
-PE requires DOS and PE headers with bounded offset and optional-header checks;
-`MZ` alone is insufficient. ELF checks identification/header fields. Mach-O supports
-thin and big-endian universal headers, with at most 64 architecture records. Java class files require a supported version (45–70) and a bounded constant pool (up to 4,096 slots), so shared magic alone is insufficient. PDF
-headers are searched within the first 1 KiB. TAR checks the header checksum.
-Script detection relies on recognized interpreters in shebangs; ordinary prose
-and language-looking filenames do not establish a language. Batch/HTML/XML/JSON
-use conservative preambles/parsing and medium confidence.
-
-ZIP subtypes use central-directory names: OOXML requires `[Content_Types].xml`
-and `word/document.xml`, `xl/workbook.xml` or `ppt/presentation.xml`; JAR requires
-`META-INF/MANIFEST.MF`; APK requires `AndroidManifest.xml` and either `classes.dex`
-or `resources.arsc`. An APK's JAR manifest is compatible, not a conflict. Conflicting
-subtype markers produce `ambiguous` with alternatives. Container markers do not
-validate document semantics or authenticity.
-
-## Bounds and limitations
-
-The fast path retains the existing 8 KiB prefix per worker. ZIP candidates
-use additional reads through the already-open handle: at most a 65,557-byte tail
-plus a 1 MiB directory, 4,096 entries and 4,096 bytes per name. Names are retained
-only within those limits. No entry is decompressed during subtype detection.
-This adds bounded transient directory/name allocations per ZIP worker, not a
-separate full-file read. CFB candidates can additionally read at most 1 MiB of
-allocation/directory metadata, at most 109 inline FAT sectors and 4,096 directory
-entries, with loop and offset checks. Discriminating stream names identify DOC,
-XLS and PPT; an installer root class identifier plus streams identifies MSI.
-Conflicts are ambiguous. Encryption markers, external DIFAT chains, malformed
-or over-budget metadata retain generic CFB. Stream content is not extracted.
-Oversized, truncated, ZIP64 and multi-disk directories
-remain generic ZIP. There is no mandatory new library, C runtime, external
-executable or signature database; `infer` remains in the legacy classifier.
-
-A signature is not full structural validation. Deeply embedded headers, binaries
-with PE headers beyond the prefix, unsupported fat Mach-O variants, non-UTF-8 text without a supported UTF-16 BOM, or
-truncated text, scripts without strong markers, and many polyglots can remain
-unknown, generic or undetected. `ambiguous` covers observed conflicting headers
-and subtype markers; it does not promise general polyglot discovery.
+Use `--include-format pdf` for an alias or `--include-mime image/svg+xml`
+for a MIME type. The legacy `file_type` field remains available to custom rules.
 
 ## Extension compatibility
 
@@ -114,7 +67,7 @@ use their named suffixes. Unlisted suffixes remain unknown.
 | `mismatch` | High-confidence evidence contradicts a recognized extension |
 | `missing_extension` | Filename has no extension |
 | `unknown_extension` | Extension is not registered |
-| `unknown_format` | Content evidence is insufficient |
+| `unknown_format` | There is no format alias for an extension comparison |
 | `ambiguous` | Conflicting interpretations, generic ZIP against a subtype extension, or evidence too weak to contradict the extension |
 | `not_evaluated` | Legacy metadata not yet analyzed |
 

@@ -93,9 +93,9 @@ impl Progress {
         let template = if let Some(total) = total {
             let digits = total.checked_ilog10().map_or(1, |log| log + 1);
             let meter = if color {
-                "{bar:12.cyan/blue}"
+                "{bar:24.cyan/blue}"
             } else {
-                "{bar:12}"
+                "{bar:24}"
             };
             format!(
                 "{{prefix}} [{meter}] {{pos:>{digits}}}/{{len}} {{percent:>3}}% [{{elapsed_precise}}] {{msg}}"

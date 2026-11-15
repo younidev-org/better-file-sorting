@@ -236,7 +236,7 @@ fn verify(repo: &Repository, child: &Child, cancelled: &AtomicBool) -> Result<()
 fn policy(config: &Config) -> String {
     let base = format!(
         "zip-receipt-1/{}/{:?}",
-        classifier::DETECTOR_VERSION,
+        classifier::FILE_DETECTOR_VERSION,
         config.limits
     );
     if config.filters.is_empty() {

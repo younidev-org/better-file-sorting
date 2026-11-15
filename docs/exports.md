@@ -20,8 +20,7 @@ needed. A sealed repository supports export preview, not payload export.
 
 | Preset | Groups by | Example output ZIPs |
 | --- | --- | --- |
-| `by-format` (default) | Saved content detection | `pdf.zip`, `pe.zip`, `elf.zip`, `unknown.zip` |
-| `by-format-or-extension` | Medium/high-confidence detected content, otherwise original extension | `detected/pdf.zip`, `undetected/extension-foo.zip`, `undetected/no-extension.zip`, `ambiguous.zip` |
+| `by-format` (default) | Saved MIME type with optional short aliases | `pdf.zip`, `mime/image/svg+xml.zip`, `undetected.zip` |
 | `by-extension` | Original final filename extension, case-insensitively | `pdf.zip`, `exe.zip`, `bin.zip` |
 | `by-mismatch` | Saved extension/content agreement status | `match.zip`, `mismatch.zip`, `ambiguous.zip` |
 
@@ -38,47 +37,15 @@ Do not combine `--rules` and `--preset`.
 
 ## Automatic grouping with optional explicit rules
 
-```sh
-bfsort export ./repository --preset by-format-or-extension --zip-each-dir -o ./exports/automatic --resume
-```
+`by-format` uses a short alias such as `pdf` when available. A MIME type without
+an alias gets its own path, for example `mime/image/svg+xml/`. With
+`--zip-each-dir`, BFSORT writes a ZIP for each complete format group, such as
+`mime/image/svg+xml.zip`. Generic MIME results go to `undetected/`.
+Choose `by-extension` to group by the final suffix of the original filename.
 
-No format/extension list is required. Medium/high-confidence identified formats
-use `detected/<format>/`. Unknown, unevaluated and low-confidence content uses
-`undetected/extension-<extension>/`, or `undetected/no-extension/` when no usable
-extension exists. Conflicting detection uses `ambiguous/`. For example, generic
-printable text has low confidence and falls back to its filename extension.
-Fallback names are lowercase and sanitized; they do not establish content format.
-Every occurrence is retained, including duplicate hashes. Only nonempty groups
-produce ZIPs. New detector identifiers and arbitrary extensions become groups
-automatically. The existing `by-format` default remains available unchanged.
-
-With this grouping, `--zip-each-dir` creates a ZIP for each complete destination
-directory (`detected/pdf.zip`, rather than a combined `detected.zip`). Custom rules
-using `{format_or_extension}` get the same behavior, including their explicit
-override groups. Other rules/presets keep their top-level ZIP grouping.
-Explicit `--zip-dir` selections still include the selected directory's descendants.
-
-For automatic fallback **and** explicit selections in one run, use
-[rules.automatic.example.toml](../examples/rules.automatic.example.toml):
-
-```toml
-[organization]
-duplicates = "all"
-default_directory = "{format_or_extension}"
-
-[[rules]]
-name = "selected-pdfs"
-[rules.match]
-detected_format = "pdf"
-[rules.output]
-directory = "selected-pdfs"
-filename = "{sha256}.sample"
-```
-
-Run with `--rules examples/rules.automatic.example.toml` instead of `--preset`.
-The first matching rule controls its output; everything else gets the automatic
-fallback. `{format_or_extension}` is a directory-only placeholder. Detection,
-confidence and original extension remain separately recorded in the repository catalog.
+Use the directory-only `{format_group}` template in custom rules that also
+override selected groups. See
+[rules.automatic.example.toml](../examples/rules.automatic.example.toml).
 
 ## Payload names
 
@@ -105,28 +72,52 @@ under detected naming.
 
 ## ZIP structure
 
+Export writes one ZIP for the full selection by default. A directory destination
+contains `archive.zip` and a collection-wide `export.sqlite3`. With
+`--zip-each-dir`, that directory contains the grouped ZIPs and the same
+collection-wide database. Each ZIP also has an index for its own contents.
+
 ```text
-pdf.zip
-├── pdf/
-│   ├── <sha256>.sample
-│   └── <sha256>-<occurrence-id>.sample
-└── export.json
+exports/
+├── export.sqlite3
+└── archive.zip
+    ├── pdf/
+    │   └── <sha256>.sample
+    ├── export.json
+    └── export.sqlite3
 ```
 
+An explicit `-o ./files.zip` writes `files.zip` and `files.sqlite3` beside it.
+
 `export.json` is a compact report declaring `kind = "bfsort-export"`,
-`schema_version = 2`, and tool version. It reports payload and occurrence counts,
+`schema_version = 3`, and tool version. It reports payload and occurrence counts,
 unique object counts, logical/payload byte totals, and SHA-256 fingerprints of the
-planned layout and effective selected metadata. It does not export individual
-occurrence records, provenance paths, `layout.jsonl`, or `manifest.jsonl`.
-Passwords and encryption keys are never included. With output encryption, the
-report is encrypted with the payload entries.
+planned layout and effective selected metadata. It also records the index SHA-256.
+Each index contains one row per exported payload, with its path inside the ZIP,
+original entry name, SHA-256, size, detected format, family, MIME type, and
+mismatch status. The detected format displays the short alias or the MIME type,
+with `undetected` for generic results. The collection index uses `archive_path` to name the ZIP
+relative to the index, including any subdirectories. Inside a ZIP the column
+is empty because every row belongs to that archive.
+
+ZIP encryption covers the two metadata entries inside each ZIP. The
+collection-wide index is an owner-only plaintext file and lists the metadata
+for password-protected ZIPs as well. Passwords and keys are never included.
+
+To browse the collection with the SQLite CLI:
+
+```sh
+sqlite3 -readonly ./exports/export.sqlite3 \
+  'SELECT archive_path, path, detected_format FROM entries ORDER BY archive_path, path LIMIT 20;'
+```
 
 Normal export trusts repository content identities; it does not rehash source
 objects or perform an integrity audit. Resumable export hashes completed ZIPs to
 detect changes. Recovery after publication without a saved receipt checks the
-report fingerprints and every planned payload path, size and hash. Resume
-requires the compact export report. Use a fresh destination to recreate an
-export with obsolete indexes. See [recovery](recovery.md).
+report fingerprints, the SQLite index, and every planned payload path, size and hash.
+Resume rebuilds a missing collection index after verifying the ZIPs and refuses
+to overwrite a modified index. Use a fresh destination for older exports.
+See [recovery](recovery.md).
 
 ## Storage requirements
 
@@ -136,7 +127,7 @@ copy. Peak storage includes staging/output ZIPs as well as source archives and
 repository objects. Compression ratios are data-dependent.
 
 Nested provenance remains in the source repository catalog. ZIP exports are
-payload collections with a compact report, not independent repositories.
+payload collections with a browsing index and a compact report.
 
 ## Compression cost
 

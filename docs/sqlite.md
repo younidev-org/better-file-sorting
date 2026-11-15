@@ -8,7 +8,7 @@ relationships, retained view entries, removals and repository operation history.
 
 Schema v3 requires a fresh repository. Re-ingest the original inputs into a
 different output directory. Older catalogs are refused, and new detections use
-`bfsort-3`.
+`linux-file-1`.
 
 Each occurrence stores scalar metadata in SQLite columns. Object sizes live in
 `objects`, and nested relationships live in `ancestry`. Evidence, alternatives,

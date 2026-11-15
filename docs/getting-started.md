@@ -46,7 +46,7 @@ work/
 │   ├── objects/            Unique payloads stored by SHA-256
 │   ├── views/              Organized repository layouts
 │   └── operations/         Recovery state
-└── exports/                Standalone ZIPs with compact export reports
+└── exports/                ZIPs and a collection-wide export.sqlite3
 ```
 
 For an older catalog, re-ingest the original inputs into a fresh directory. See [SQLite metadata](sqlite.md) and [Recovery](recovery.md).

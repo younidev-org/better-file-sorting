@@ -76,7 +76,7 @@ Repository security defaults to `sealed` (`0000` payload permissions). Select
 or explicit analysis. Existing repository security modes never change automatically.
 These permissions are not a sandbox.
 
-Grouping defaults to `--preset by-format`. Choose `by-format-or-extension`, `by-extension` or `by-mismatch`,
+Grouping defaults to `--preset by-format`. Choose `by-extension` or `by-mismatch`,
 or supply custom `--rules FILE`. Presets and custom rules are mutually exclusive.
 Presets retain every distinct occurrence; custom rules control duplicate policy.
 Archive-derived filenames remain safe `.sample` names. `--workers N` selects
@@ -126,7 +126,9 @@ persistent repository first, then export with `--resume`.
 `--zip-dir DIRECTORY` selects sorted directories; repeat to choose several.
 `--zip-each-dir` creates one ZIP per selected directory, or per top-level group.
 Automatic fallback grouping uses each full group directory, producing
-`detected/pdf.zip` and separate `undetected/extension-*.zip` files.
+`pdf.zip`, `mime/image/svg+xml.zip`, or `undetected.zip`.
+`-o ./exports` with `--zip` writes `archive.zip` and `export.sqlite3` into
+a new directory. See [ZIP structure and indexes](exports.md#zip-structure).
 `--output-password-file FILE` encrypts output with AES-256; the private `0600`
 file must contain exactly one nonempty password line. `--staging-dir DIRECTORY`
 selects an existing scratch directory. Output destinations are never overwritten.
@@ -200,9 +202,9 @@ Neither operation changes stored sample bytes or unlocks sealed payloads.
 Unsupported schemas fail explicitly. See [nested extraction](nested.md) for
 configuration, depth examples, budgets and failure behavior.
 
-Automatic grouping with extension fallback is available through
-`--preset by-format-or-extension`. Custom rules can use `{format_or_extension}`
-as their default directory and override selected formats or extensions. See
+The default `by-format` preset groups content by its saved MIME type and
+uses short aliases where available. Custom rules can use `{format_group}`
+as their default directory and override selected groups. See
 [presets and exports](exports.md#automatic-grouping-with-optional-explicit-rules).
 
 ## Configuration validation

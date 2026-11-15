@@ -1,5 +1,5 @@
 //! Streams ordinary files or individual ZIP entries into sealed temporary storage.
-//! Each copy computes SHA-256 and a bounded classification prefix while enforcing
+//! Each copy computes SHA-256 while enforcing
 //! configured size and expansion limits. Archive names, entry kinds, integrity and
 //! cancellation are checked before extracted content can become a stored object.
 
@@ -17,7 +17,6 @@ pub struct Extracted {
     pub file: tempfile::NamedTempFile,
     pub sha256: String,
     pub size: u64,
-    pub prefix: Vec<u8>,
     pub hashing_seconds: f64,
 }
 
@@ -60,7 +59,6 @@ pub(crate) fn extract_file_with_progress(
     let mut file = tempfile::NamedTempFile::new_in(staging)?;
     crate::repository::security::seal(file.as_file(), crate::app::config::SecurityMode::Sealed)?;
     let mut hash = Sha256::new();
-    let mut prefix = Vec::with_capacity(8192);
     let mut size = 0u64;
     let mut hashing_seconds = 0.0;
     let mut buffer = [0u8; 65536];
@@ -81,7 +79,6 @@ pub(crate) fn extract_file_with_progress(
         let hash_started = std::time::Instant::now();
         hash.update(&buffer[..count]);
         hashing_seconds += hash_started.elapsed().as_secs_f64();
-        prefix.extend_from_slice(&buffer[..count.min(8192 - prefix.len())]);
         file.write_all(&buffer[..count])?;
     }
     // Object publication synchronizes content and final permissions before committing metadata.
@@ -89,7 +86,6 @@ pub(crate) fn extract_file_with_progress(
         file,
         sha256: hash.finalize().iter().map(|b| format!("{b:02x}")).collect(),
         size,
-        prefix,
         hashing_seconds,
     })
 }
@@ -217,7 +213,6 @@ pub(crate) fn extract_with_progress(
         }
         let mut file = builder.tempfile_in(staging)?;
         let mut hash = Sha256::new();
-        let mut prefix = Vec::with_capacity(8192);
         let mut size = 0u64;
         let mut hashing_seconds = 0.0;
         let mut buffer = [0u8; 65536];
@@ -253,8 +248,6 @@ pub(crate) fn extract_with_progress(
             let hash_started = std::time::Instant::now();
             hash.update(&buffer[..count]);
             hashing_seconds += hash_started.elapsed().as_secs_f64();
-            let prefix_count = count.min(8192 - prefix.len());
-            prefix.extend_from_slice(&buffer[..prefix_count]);
             file.write_all(&buffer[..count])?;
         }
         if invalid || size != expected_size {
@@ -264,7 +257,6 @@ pub(crate) fn extract_with_progress(
             file,
             sha256: hash.finalize().iter().map(|b| format!("{b:02x}")).collect(),
             size,
-            prefix,
             hashing_seconds,
         });
     }

@@ -66,8 +66,10 @@ payload hashes, the versioned export header, compact export report and payload l
 recording completion. Unsupported or inconsistent checkpoints fail explicitly.
 
 A resumable output directory can contain completed ZIPs while the collection is
-incomplete. Rerun the same command to continue. Without `--resume`, multi-ZIP
-output retains all-or-nothing directory publication and refuses existing targets.
+incomplete. The collection index is published after all ZIPs succeed. Rerunning
+the same command verifies the ZIPs and rebuilds a missing index. BFSORT refuses
+to overwrite a changed index. Without `--resume`, a directory destination
+publishes its ZIPs and index together and refuses existing targets.
 
 ## Cancellation and resource exhaustion
 

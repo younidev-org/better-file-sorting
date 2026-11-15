@@ -44,7 +44,7 @@ fn embedded_presets_and_exports_keep_report_without_record_indexes() {
                 .any(|r| r.path.starts_with(&format!("{expected}/")))
         );
     }
-    let output = t.path().join("out.zip");
+    let output = t.path().join("exports");
     let result = common::run(&[
         "export".as_ref(),
         root.as_os_str(),
@@ -58,10 +58,24 @@ fn embedded_presets_and_exports_keep_report_without_record_indexes() {
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
-    let mut zip = zip::ZipArchive::new(std::fs::File::open(output).unwrap()).unwrap();
+    let mut zip =
+        zip::ZipArchive::new(std::fs::File::open(output.join("archive.zip")).unwrap()).unwrap();
+    let master = rusqlite::Connection::open_with_flags(
+        output.join("export.sqlite3"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let entries: i64 = master
+        .query_row(
+            "SELECT count(*) FROM entries WHERE archive_path = 'archive.zip'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(entries, 3);
     let header: serde_json::Value =
         serde_json::from_reader(zip.by_name("export.json").unwrap()).unwrap();
-    assert_eq!(header["schema_version"], 2);
+    assert_eq!(header["schema_version"], 3);
     assert_eq!(header["payload_entries"], 3);
     assert_eq!(header["occurrences"], 3);
     assert_eq!(header["unique_objects"], 1);
@@ -69,7 +83,23 @@ fn embedded_presets_and_exports_keep_report_without_record_indexes() {
     assert_eq!(header["snapshot_fingerprint"].as_str().unwrap().len(), 64);
     assert!(zip.by_name("manifest.jsonl").is_err());
     assert!(zip.by_name("layout.jsonl").is_err());
-    assert_eq!(zip.len(), 4);
+    let mut index = tempfile::NamedTempFile::new().unwrap();
+    std::io::copy(
+        &mut zip.by_name("export.sqlite3").unwrap(),
+        index.as_file_mut(),
+    )
+    .unwrap();
+    let db = rusqlite::Connection::open_with_flags(
+        index.path(),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let entries: i64 = db.query_row(
+        "SELECT count(*) FROM entries WHERE detected_format='pdf' AND mime_type='application/pdf'",
+        [], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(entries, 3);
+    assert_eq!(zip.len(), 5);
 }
 
 #[test]
@@ -132,7 +162,10 @@ fn resume_export_skips_verified_archives_and_rejects_tampering_or_changed_plan()
         .unwrap()
         .remove("text.zip");
     state["completed"] = false.into();
-    std::fs::remove_file(out.join("text.zip")).unwrap();
+    let text_before = std::fs::read(out.join("text.zip")).unwrap();
+    let index = out.join("export.sqlite3");
+    let index_before = std::fs::read(&index).unwrap();
+    std::fs::remove_file(&index).unwrap();
     std::fs::write(&checkpoint, serde_json::to_vec(&state).unwrap()).unwrap();
     let retry = common::run(&args);
     assert!(
@@ -140,7 +173,8 @@ fn resume_export_skips_verified_archives_and_rejects_tampering_or_changed_plan()
         "{}",
         String::from_utf8_lossy(&retry.stderr)
     );
-    assert!(out.join("text.zip").exists());
+    assert_eq!(std::fs::read(out.join("text.zip")).unwrap(), text_before);
+    assert_eq!(std::fs::read(&index).unwrap(), index_before);
     assert_eq!(before, std::fs::metadata(&pdf).unwrap().modified().unwrap());
     let changed = common::run(&[
         "export".as_ref(),
@@ -156,7 +190,12 @@ fn resume_export_skips_verified_archives_and_rejects_tampering_or_changed_plan()
     std::fs::write(&pdf, b"tampered").unwrap();
     let tampered = common::run(&args);
     assert!(!tampered.status.success());
-    assert_eq!(std::fs::read(pdf).unwrap(), b"tampered");
+    assert_eq!(std::fs::read(&pdf).unwrap(), b"tampered");
+    std::fs::write(&index, b"modified index").unwrap();
+    let result = common::run(&args);
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("collection index changed"));
+    assert_eq!(std::fs::read(index).unwrap(), b"modified index");
 }
 
 #[test]
@@ -230,7 +269,7 @@ fn crash_recovery_rejects_corrupted_export_report() {
 }
 
 #[test]
-fn automatic_fallback_exports_each_dynamic_group_and_keeps_explicit_rules() {
+fn format_grouping_exports_mime_types_without_filename_fallback() {
     let t = tempfile::tempdir().unwrap();
     let input = t.path().join("mixed.zip");
     common::archive(
@@ -240,6 +279,10 @@ fn automatic_fallback_exports_each_dynamic_group_and_keeps_explicit_rules() {
             ("a.NEWTYPE", b"\0\xff\x01"),
             ("b.newtype", b"\0\xff\x01"),
             ("unknown", b"\0\xfe"),
+            (
+                "vector.foo",
+                b"<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>",
+            ),
             ("weak.xyz", b"ordinary prose"),
             ("conflict.bin", b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR %PDF-1.7\n"),
         ],
@@ -253,7 +296,7 @@ fn automatic_fallback_exports_each_dynamic_group_and_keeps_explicit_rules() {
         "--security-mode".as_ref(),
         "standard".as_ref(),
         "--preset".as_ref(),
-        "by-format-or-extension".as_ref(),
+        "by-format".as_ref(),
     ]);
     assert!(
         ingest.status.success(),
@@ -265,7 +308,7 @@ fn automatic_fallback_exports_each_dynamic_group_and_keeps_explicit_rules() {
         "export".as_ref(),
         root.as_os_str(),
         "--preset".as_ref(),
-        "by-format-or-extension".as_ref(),
+        "by-format".as_ref(),
         "--zip-each-dir".as_ref(),
         "--output".as_ref(),
         output.as_os_str(),
@@ -278,11 +321,11 @@ fn automatic_fallback_exports_each_dynamic_group_and_keeps_explicit_rules() {
         String::from_utf8_lossy(&result.stderr)
     );
     for (group, count) in [
-        ("detected/pdf", 1),
-        ("undetected/extension-newtype", 2),
-        ("undetected/no-extension", 1),
-        ("undetected/extension-xyz", 1),
-        ("ambiguous", 1),
+        ("pdf", 1),
+        ("undetected", 3),
+        ("mime/image/svg+xml", 1),
+        ("text", 1),
+        ("png", 1),
     ] {
         let mut zip =
             zip::ZipArchive::new(std::fs::File::open(output.join(format!("{group}.zip"))).unwrap())
@@ -293,6 +336,36 @@ fn automatic_fallback_exports_each_dynamic_group_and_keeps_explicit_rules() {
         assert!(zip.by_name("manifest.jsonl").is_err());
     }
     assert!(common::run(&args).status.success());
+    let query = common::run(&[
+        "query".as_ref(),
+        root.as_os_str(),
+        "--include-mime".as_ref(),
+        "IMAGE/SVG+XML".as_ref(),
+        "--count".as_ref(),
+    ]);
+    assert!(query.status.success());
+    let count: serde_json::Value = serde_json::from_slice(&query.stdout).unwrap();
+    assert_eq!(count["occurrences"], 1);
+    let stats = common::run(&["stats".as_ref(), root.as_os_str()]);
+    let stats: serde_json::Value = serde_json::from_slice(&stats.stdout).unwrap();
+    assert_eq!(
+        stats["by_detected_format"]["image/svg+xml"]["occurrences"],
+        1
+    );
+    assert_eq!(stats["by_detected_format"]["undetected"]["occurrences"], 3);
+    let index = rusqlite::Connection::open_with_flags(
+        output.join("export.sqlite3"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let format: String = index
+        .query_row(
+            "SELECT detected_format FROM entries WHERE archive_path = 'mime/image/svg+xml.zip'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(format, "image/svg+xml");
     let rows = bfsort::repository::metadata::load(&root).unwrap();
     let explicit = Rules::parse("[organization]\nduplicates = 'all'\ndefault_directory = 'remainder'\n[[rules]]\nname = 'selected-extension'\n[rules.match]\noriginal_extension = 'newtype'\n[rules.output]\ndirectory = 'my-selection'\nfilename = '{sha256}.sample'\n").unwrap();
     let plan = explicit.plan(&rows).unwrap();
@@ -302,9 +375,9 @@ fn automatic_fallback_exports_each_dynamic_group_and_keeps_explicit_rules() {
             .count(),
         2
     );
-    assert_eq!(plan.len(), 6);
+    assert_eq!(plan.len(), 7);
     let both = t.path().join("both.toml");
-    std::fs::write(&both, "[organization]\nduplicates = 'all'\ndefault_directory = '{format_or_extension}'\n[[rules]]\nname = 'selected-extension'\n[rules.match]\noriginal_extension = 'newtype'\n[rules.output]\ndirectory = 'my-selection'\nfilename = '{sha256}.sample'\n").unwrap();
+    std::fs::write(&both, "[organization]\nduplicates = 'all'\ndefault_directory = '{format_group}'\n[[rules]]\nname = 'selected-extension'\n[rules.match]\noriginal_extension = 'newtype'\n[rules.output]\ndirectory = 'my-selection'\nfilename = '{sha256}.sample'\n").unwrap();
     let custom = t.path().join("custom");
     let out = common::run(&[
         "export".as_ref(),
@@ -321,14 +394,15 @@ fn automatic_fallback_exports_each_dynamic_group_and_keeps_explicit_rules() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(custom.join("my-selection.zip").is_file());
-    assert!(custom.join("detected/pdf.zip").is_file());
-    assert!(custom.join("ambiguous.zip").is_file());
+    assert!(custom.join("pdf.zip").is_file());
+    assert!(custom.join("png.zip").is_file());
+    assert!(custom.join("mime/image/svg+xml.zip").is_file());
     let direct = t.path().join("direct");
     let out = common::run(&[
         "ingest".as_ref(),
         input.as_os_str(),
         "--preset".as_ref(),
-        "by-format-or-extension".as_ref(),
+        "by-format".as_ref(),
         "--zip-each-dir".as_ref(),
         "--output".as_ref(),
         direct.as_os_str(),
@@ -338,7 +412,8 @@ fn automatic_fallback_exports_each_dynamic_group_and_keeps_explicit_rules() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(direct.join("detected/pdf.zip").is_file());
+    assert!(direct.join("pdf.zip").is_file());
+    assert!(direct.join("undetected.zip").is_file());
 }
 
 #[test]
@@ -392,12 +467,15 @@ fn explicit_export_naming_changes_payload_suffixes_without_changing_views() {
             assert!(zip.by_name(expected).is_ok());
         } else {
             assert!(zip.file_names().all(|name| {
-                name.is_ok_and(|name| name.ends_with(".sample") || name == "export.json")
+                name.is_ok_and(|name| {
+                    name.ends_with(".sample")
+                        || matches!(name.as_ref(), "export.json" | "export.sqlite3")
+                })
             }));
         }
         assert!(zip.by_name("layout.jsonl").is_err());
         assert!(zip.by_name("manifest.jsonl").is_err());
-        assert_eq!(zip.len(), 3);
+        assert_eq!(zip.len(), 4);
         assert_eq!(std::fs::read(root.join("views/CURRENT")).unwrap(), current);
     }
     let generation = String::from_utf8(current).unwrap();

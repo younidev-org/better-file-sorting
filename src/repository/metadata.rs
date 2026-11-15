@@ -200,7 +200,6 @@ pub fn reclassify_selected(
     resume: bool,
     filters: &crate::selection::Filters,
 ) -> Result<usize> {
-    use std::io::Read;
     use std::sync::atomic::Ordering;
     ensure!(
         repo.mode() == SecurityMode::Standard,
@@ -239,7 +238,7 @@ pub fn reclassify_selected(
             let checkpoint = checkpoint_dir.join(format!(
                 "{}-{}.json",
                 record.sha256,
-                crate::detection::classifier::DETECTOR_VERSION
+                crate::detection::classifier::FILE_DETECTOR_VERSION
             ));
             crate::ingest::discovery::check_path(&checkpoint)?;
             let hash =
@@ -260,18 +259,16 @@ pub fn reclassify_selected(
                 let detection: crate::detection::classifier::Detection =
                     serde_json::from_reader(fs::File::open(&checkpoint)?)?;
                 ensure!(
-                    detection.detector_version == crate::detection::classifier::DETECTOR_VERSION,
+                    detection.detector_version
+                        == crate::detection::classifier::FILE_DETECTOR_VERSION,
                     "stale classification checkpoint"
                 );
                 cache.insert(record.sha256.clone(), detection);
                 reused += 1;
             } else {
-                let mut prefix = Vec::with_capacity(crate::detection::classifier::PREFIX_LIMIT);
-                Read::take(&mut file, crate::detection::classifier::PREFIX_LIMIT as u64)
-                    .read_to_end(&mut prefix)?;
                 cache.insert(
                     record.sha256.clone(),
-                    crate::detection::classifier::detect_reader(&prefix, &mut file),
+                    crate::detection::classifier::detect_file(&mut file)?,
                 );
             }
             let mut saved = tempfile::NamedTempFile::new_in(&checkpoint_dir)?;

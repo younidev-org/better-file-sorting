@@ -4,7 +4,7 @@ version = 1
 
 [organization]
 duplicates = "all"
-default_directory = "{format_or_extension}"
+default_directory = "{format_group}"
 default_filename = "{sha256}.sample"
 
 # Remove this block for automatic grouping alone; add rules for other selections.

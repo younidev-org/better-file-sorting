@@ -75,7 +75,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
          #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]\n\
          pub enum Format {{\n{names}}}\n\n\
          impl Format {{\n\
-             #[cfg(test)]\n    const ALL: &'static [Self] = &[\n{all}    ];\n\n\
+             const ALL: &'static [Self] = &[\n{all}    ];\n\n\
              /// Return the identifier used in configuration and reports.\n\
              pub fn as_str(self) -> &'static str {{\n        match self {{\n{strings}        }}\n    }}\n\n\
              fn metadata(self) -> (Family, Option<&'static str>) {{\n        match self {{\n{metadata}        }}\n    }}\n\

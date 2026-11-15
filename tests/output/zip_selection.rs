@@ -40,7 +40,7 @@ fn selected_directories_share_one_zip_without_duplicate_entries() {
         String::from_utf8_lossy(&out.stderr)
     );
     let mut zip = zip::ZipArchive::new(fs::File::open(&output).unwrap()).unwrap();
-    assert_eq!(zip.len(), 3);
+    assert_eq!(zip.len(), 4);
     assert!(zip.by_name("documents/pdf/a.pdf").is_ok());
     assert!(zip.by_name("documents/text/b.txt").is_ok());
     assert!(zip.by_name("other/c.bin").is_err());
@@ -92,13 +92,43 @@ fn separate_zips_use_top_level_or_selected_nested_directories() {
             "documents.zip"
         };
         let mut zip = zip::ZipArchive::new(fs::File::open(output.join(name)).unwrap()).unwrap();
-        assert_eq!(zip.len(), if selected { 2 } else { 3 });
+        assert_eq!(zip.len(), if selected { 3 } else { 4 });
         assert!(
             zip.by_name_decrypt("documents/pdf/a.pdf", b"secret")
                 .is_ok()
         );
         assert!(output.join("other.zip").is_file());
         assert!(!output.join("repository").exists());
+        let index = rusqlite::Connection::open_with_flags(
+            output.join("export.sqlite3"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let mut paths = index
+            .prepare("SELECT archive_path, path FROM entries ORDER BY archive_path, path")
+            .unwrap();
+        let rows: Vec<(String, String)> = paths
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows[0], (name.into(), "documents/pdf/a.pdf".into()));
+        assert_eq!(
+            rows.last().unwrap(),
+            &("other.zip".into(), "other/c.bin".into())
+        );
+        assert_eq!(rows.len(), if selected { 2 } else { 3 });
+        let mut local = tempfile::NamedTempFile::new().unwrap();
+        std::io::copy(
+            &mut zip.by_name_decrypt("export.sqlite3", b"secret").unwrap(),
+            local.as_file_mut(),
+        )
+        .unwrap();
+        let local = rusqlite::Connection::open(local.path()).unwrap();
+        let local_rows: i64 = local
+            .query_row("SELECT count(*) FROM entries", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(local_rows, if selected { 1 } else { 2 });
         let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
         assert_eq!(report["zip"]["archives"].as_array().unwrap().len(), 2);
         assert!(!common::run(&args).status.success());

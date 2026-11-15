@@ -673,11 +673,11 @@ fn run(cli: Cli) -> Result<u8> {
                     rows.iter().map(|r| &r.sha256).collect();
                 output(
                     ui,
-                    &serde_json::json!({"unique_objects": hashes.len(), "detector_version": bfsort::detection::classifier::DETECTOR_VERSION}),
+                    &serde_json::json!({"unique_objects": hashes.len(), "detector_version": bfsort::detection::classifier::FILE_DETECTOR_VERSION}),
                     &format!(
                         "Preview: {} unique objects; detector {}",
                         hashes.len(),
-                        bfsort::detection::classifier::DETECTOR_VERSION
+                        bfsort::detection::classifier::FILE_DETECTOR_VERSION
                     ),
                 )?;
                 return Ok(0);

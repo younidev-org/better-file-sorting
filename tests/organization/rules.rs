@@ -168,12 +168,11 @@ fn regular_names_keep_long_extensions_and_legacy_records_stay_samples() {
 }
 
 #[test]
-fn automatic_directory_keeps_ambiguity_legacy_and_unsafe_extensions_separate() {
+fn format_group_keeps_legacy_ambiguity_and_ignores_filename_extensions() {
     use bfsort::detection::classifier::{Confidence, Format};
-    let rules = Rules::parse(
-        "[organization]\nduplicates = 'all'\ndefault_directory = '{format_or_extension}'",
-    )
-    .unwrap();
+    let rules =
+        Rules::parse("[organization]\nduplicates = 'all'\ndefault_directory = '{format_group}'")
+            .unwrap();
     let mut ambiguous = row("a.pdf", 'a', 'a');
     ambiguous.detection.detected_format = Format::Ambiguous;
     ambiguous.detection.confidence = Confidence::Medium;
@@ -183,9 +182,11 @@ fn automatic_directory_keeps_ambiguity_legacy_and_unsafe_extensions_separate() {
     unsafe_extension.original_extension = "../evil\\name".into();
     let plan = rules.plan(&[ambiguous, legacy, unsafe_extension]).unwrap();
     assert!(plan.iter().any(|p| p.path.starts_with("ambiguous/")));
-    assert!(
+    assert_eq!(
         plan.iter()
-            .any(|p| p.path.starts_with("undetected/extension-foo/"))
+            .filter(|p| p.path.starts_with("undetected/"))
+            .count(),
+        2
     );
     assert!(
         plan.iter()

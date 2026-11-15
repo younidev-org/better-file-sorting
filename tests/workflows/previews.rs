@@ -148,7 +148,15 @@ fn regular_policy_preserves_extensions_and_resolves_collisions() {
     let zip = zip::ZipArchive::new(fs::File::open(&output).unwrap()).unwrap();
     let names: Vec<_> = (0..zip.len())
         .map(|i| zip.by_index_data(i).unwrap().name().unwrap().into_owned())
-        .filter(|p| !["layout.jsonl", "export.json", "manifest.jsonl"].contains(&p.as_str()))
+        .filter(|p| {
+            ![
+                "layout.jsonl",
+                "export.json",
+                "export.sqlite3",
+                "manifest.jsonl",
+            ]
+            .contains(&p.as_str())
+        })
         .collect();
     assert_eq!(names.len(), 2);
     assert!(

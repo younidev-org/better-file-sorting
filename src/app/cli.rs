@@ -430,7 +430,7 @@ pub struct Export {
     /// Embedded grouping: defaults to by-format when no rules are supplied
     #[arg(long, conflicts_with = "rules")]
     pub preset: Option<crate::organization::rules::Preset>,
-    /// Destination ZIP, or collection directory with --zip-each-dir
+    /// Destination directory, or a .zip file with a sibling SQLite index
     #[arg(short = 'o', long)]
     pub output: PathBuf,
     /// Create one ZIP per group; automatic fallback uses each full group directory

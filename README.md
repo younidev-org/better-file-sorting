@@ -28,12 +28,12 @@
 
 Download a Linux binary from [GitHub Releases](https://github.com/younidev-org/better-file-sorting/releases) or [build from source](docs/development.md#build).
 
-Sort a directory of readable ZIPs and export one ZIP per detected format:
+Content detection uses the Linux `file` command. Sort a directory of readable ZIPs and export it with a SQLite browsing index:
 
 ```sh
 bfsort ingest ./incoming --extract --security-mode standard --resume -o ./repository
 bfsort stats ./repository
-bfsort export ./repository --preset by-format --zip-each-dir -o ./exports
+bfsort export ./repository --preset by-format -o ./exports
 ```
 
 For plain extraction, use `bfsort ingest --unzip-only ./archive.zip --security-mode standard -o ./extracted`.

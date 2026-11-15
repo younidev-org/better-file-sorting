@@ -408,7 +408,7 @@ fn ingest_repository(config: &Config, cancelled: &AtomicBool, rules: &Rules) -> 
         format!(
             "ingest-checkpoint-v1/{}/{}/{:?}/{:?}/{:?}/{}",
             env!("CARGO_PKG_VERSION"),
-            classifier::DETECTOR_VERSION,
+            classifier::FILE_DETECTOR_VERSION,
             config.security,
             config.input_mode,
             config.limits,
@@ -615,9 +615,9 @@ fn ingest_repository(config: &Config, cancelled: &AtomicBool, rules: &Rules) -> 
                     };
                     match result {
                         Ok(mut item) => {
-                            let file_type = classifier::classify(&item.prefix).to_string();
-                            let detection =
-                                classifier::detect_reader(&item.prefix, item.file.as_file_mut());
+                            let detection = classifier::detect_file(item.file.as_file_mut())?;
+                            let file_type =
+                                classifier::file_category(detection.detected_format).into();
                             let mismatch =
                                 crate::detection::mismatch::evaluate(&original, &detection);
                             let basename = original

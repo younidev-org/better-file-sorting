@@ -50,7 +50,7 @@ impl Receipt {
                 "invalid receipt entry index"
             );
             ensure!(
-                child.detection.detector_version == classifier::DETECTOR_VERSION,
+                child.detection.detector_version == classifier::FILE_DETECTOR_VERSION,
                 "stale receipt detection"
             );
             n.checked_add(child.size).context("receipt size overflow")
@@ -192,8 +192,8 @@ pub(super) fn direct(
             Ok(mut item) => {
                 report.metrics.hashing_seconds += item.hashing_seconds;
                 let start = Instant::now();
-                let detection = classifier::detect_reader(&item.prefix, item.file.as_file_mut());
-                let file_type = classifier::classify(&item.prefix).into();
+                let detection = classifier::detect_file(item.file.as_file_mut())?;
+                let file_type = classifier::file_category(detection.detected_format).into();
                 report.metrics.detection_seconds += start.elapsed().as_secs_f64();
                 let child = Child {
                     index,

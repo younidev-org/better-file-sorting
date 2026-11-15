@@ -40,7 +40,6 @@ fn stream_hashes_harmless_content() {
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
     );
     assert_eq!(item.size, 3);
-    assert_eq!(item.prefix, b"abc");
     assert_eq!(total, 3);
 }
 #[test]
